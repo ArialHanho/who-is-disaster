@@ -34,3 +34,28 @@ jobs:
             Get-WinEvent -FilterHashtable @{LogName='Application'; ProviderName='Application Error'; StartTime=(Get-Date).AddMinutes(-10)} -ErrorAction SilentlyContinue | Select-Object -First 3 -ExpandProperty Message
           }
           exit $testExit
+
+      - name: Native crash stack
+        if: failure()
+        timeout-minutes: 5
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:QT_QPA_PLATFORM = 'windows'
+          $env:QT_OPENGL = 'software'
+          New-Item -ItemType Directory .data/debugger -Force | Out-Null
+          Invoke-WebRequest 'https://windbg.download.prss.microsoft.com/dbazure/prod/1-2611-4001-0/windbg.msixbundle' -OutFile .data/debugger/bundle.zip
+          @'
+          import zipfile
+          from pathlib import Path
+          root = Path('.data/debugger')
+          with zipfile.ZipFile(root/'bundle.zip') as bundle:
+              item = next(i for i in bundle.infolist() if i.filename.endswith('.msix') and 'x64' in i.filename)
+              bundle.extract(item, root)
+          with zipfile.ZipFile(root/item.filename) as package:
+              for entry in package.infolist():
+                  if entry.filename.startswith('amd64/'):
+                      package.extract(entry, root)
+          '@ | python -
+          $python = (Get-Command python).Source
+          & .data/debugger/amd64/cdb.exe -G -o -c 'sxd 0x8001010d; sxe -c ".echo NATIVE_CRASH; .exr -1; k; q" av; sxe -c ".echo NATIVE_ABORT; .exr -1; k; q" 0x40000015; g' $python -u -X faulthandler -m unittest tests.test_actions_experience.ResidentExperienceTests -v > .data/native-stack.txt 2>&1
+          Get-Content .data/native-stack.txt -Tail 160
