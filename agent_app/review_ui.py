@@ -357,6 +357,7 @@ class ReviewPanel(RoundedSurface):
         self.rendered_page, self.render_generation = None, 0
         self.model_draft = None
         self.latest_bubble_message, self.current_finding = "", None
+        self.progress_text = "분석 준비 중이에요"
         self.settings_path = self.root / ".data/code/settings.json"
         self.settings_path.parent.mkdir(parents=True, exist_ok=True)
         self.setAcceptDrops(True)
@@ -1001,6 +1002,7 @@ class ReviewPanel(RoundedSurface):
             QTimer.singleShot(0, self.scan_next)
             return
         self.busy = True
+        self.progress_text = "변경을 살펴보고 있어요"
         if self.sprite and self.sprite.bubble.mode=='chatter': self.sprite.bubble.hide()
         self.subtitle.setText("살펴보는 중…")
         self.status.setText(repo["name"] + (f" · 다음 저장소 {len(self.queue)}곳" if self.queue else " · 변경을 살펴보고 있어요"))
@@ -1019,6 +1021,7 @@ class ReviewPanel(RoundedSurface):
         QThreadPool.globalInstance().start(worker)
 
     def progress(self, token, name, action, text):
+        self.progress_text = text
         if self.scan_audit is not None:
             self.scan_audit["events"].append({"stamp": time.time(), "repository": name, "stage": action, "message": text})
             self.write_scan_audit()

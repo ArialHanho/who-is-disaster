@@ -54,10 +54,14 @@ class CompleteSourceTests(unittest.TestCase):
             if len(calls)==2:raise ValueError('fixture limit')
             return {'result':{'findings':[],'summary':'검토 완료'},'usage':{}}
         with patch('agent_app.review_analysis.codex_provider.status',return_value={'ready':True,'label':'ChatGPT'}), patch('agent_app.review_analysis.codex_provider.generate',side_effect=generate):
-            result=analyze(data,max_workers=1)
+            updates=[]
+            result=analyze(data,max_workers=1,progress=lambda stage,text:updates.append(text))
         self.assertFalse(result['coverage']['full_source_review'])
         self.assertEqual(result['coverage']['completed_batches'],1)
         self.assertEqual(result['ai_error'],'fixture limit')
+        self.assertEqual(updates[0], '분석 중 · 0%')
+        self.assertEqual(updates[-1], f"분석 중 · {100 // result['coverage']['ai_batches']}%")
+        self.assertNotIn('분석 중 · 100%', updates)
 
     def test_branch_versions_remain_while_identical_copies_share_a_pass(self):
         data=snapshot({'same.py':'value = 1\n','base.py':'enabled = True\n'})

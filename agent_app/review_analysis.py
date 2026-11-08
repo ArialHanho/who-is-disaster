@@ -508,9 +508,8 @@ def analyze(snapshot, rules="", *, progress=None, cache_dir=None, max_workers=4)
             context['batch'] = {'index':index, 'total':len(contexts), 'all_view_count':len(views)}
         def report():
             if progress:
-                text = f"전체 소스 {coverage['completed_batches']}/{len(contexts)}묶음 완료"
-                if coverage['reused_batches']: text += f" · 재사용 {coverage['reused_batches']}"
-                progress('thinking', text)
+                percent = coverage['completed_batches'] * 100 // len(contexts)
+                progress('thinking', f"분석 중 · {percent}%")
         report()
         def generate(context):
             return codex_provider.generate(context, instructions=INSTRUCTIONS, output_schema=REVIEW_SCHEMA, timeout=180)

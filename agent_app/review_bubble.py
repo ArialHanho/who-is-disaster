@@ -113,7 +113,7 @@ class ReviewBubble(RoundedSurface):
         repos = panel.service.repos()
         count = len(repos)
         if panel.busy:
-            self.show_message(panel.status.text(), mode="progress")
+            self.show_message(panel.progress_text, mode="progress")
         elif not count:
             self.show_message(self.character.dialogue.choose('greeting'))
         else:
@@ -131,7 +131,8 @@ class ReviewBubble(RoundedSurface):
         self.expiry.stop()
         self.mode, self.target_repo, self.remaining_ms = mode, repo_id, auto_hide_ms
         chatting = self.compact()
-        self.overview.setVisible(mode in {'greeting', 'notice'} and bool(self.character.panel.service.repos()))
+        self.overview.setText('브리핑 열기' if mode == 'progress' else '전체 문제 보기')
+        self.overview.setVisible(mode == 'progress' or mode in {'greeting', 'notice'} and bool(self.character.panel.service.repos()))
         self.details.setText("알림 보기" if mode == "notice" else "브리핑 열기")
         self.bubble_header.setVisible(not chatting)
         self.bubble_footer.setVisible(not chatting)
