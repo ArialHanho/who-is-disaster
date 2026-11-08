@@ -42,11 +42,13 @@ class AuthorDetails(QWidget):
         super().showEvent(event)
         if not self.started:
             self.started = True
-            QTimer.singleShot(0, self.load)
+            QTimer.singleShot(0, self, self.load)
 
     def load(self):
+        if not self.isVisible(): return
         panel = self.panel
-        worker = Worker(lambda: panel.service.authors.lookup(self.repo, self.finding))
+        repo, finding, lookup = self.repo, self.finding, panel.service.authors.lookup
+        worker = Worker(lambda: lookup(repo, finding))
         panel.workers.append(worker)
         worker.signals.result.connect(self.received)
         worker.signals.error.connect(self.failed)

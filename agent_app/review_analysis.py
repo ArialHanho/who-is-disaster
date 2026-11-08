@@ -480,7 +480,7 @@ def contextual_limits(item, context, views):
     return list(dict.fromkeys(limits))
 
 
-def analyze(snapshot, rules="", *, progress=None, cache_dir=None, max_workers=2):
+def analyze(snapshot, rules="", *, progress=None, cache_dir=None, max_workers=4):
     static = integration_review(snapshot)
     views = snapshot.get("views", {})
     active = [(k, v) for k, v in views.items() if k != "base" and (v["changed"] or v["deleted"] or v.get("independent"))]

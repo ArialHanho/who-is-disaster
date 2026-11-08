@@ -6,9 +6,9 @@ file contents across refs share a pass; each distinct version is retained.
 import hashlib
 import re
 
-SOURCE_CHUNK_CHARS = 56000
-SOURCE_BATCH_CHARS = 72000
-SOURCE_BATCH_FILES = 48
+SOURCE_CHUNK_CHARS = 100000
+SOURCE_BATCH_CHARS = 120000
+SOURCE_BATCH_FILES = 80
 
 
 def source_lines(path, body):

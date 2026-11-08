@@ -11,8 +11,8 @@ def response():
 
 
 class ReviewRunnerTests(unittest.TestCase):
-    def test_two_requests_overlap_but_never_exceed_two(self):
-        gate = threading.Barrier(2)
+    def test_four_requests_overlap_but_never_exceed_four(self):
+        gate = threading.Barrier(4)
         lock = threading.Lock()
         counts = {'active':0, 'peak':0}
         def generate(context):
@@ -22,9 +22,9 @@ class ReviewRunnerTests(unittest.TestCase):
             gate.wait(timeout=5)
             with lock: counts['active'] -= 1
             return response()
-        results = list(review_batches([{'id':n} for n in range(4)], generate, max_workers=8))
-        self.assertEqual(counts['peak'], 2)
-        self.assertEqual(sorted(row[0] for row in results), list(range(4)))
+        results = list(review_batches([{'id':n} for n in range(8)], generate, max_workers=8))
+        self.assertEqual(counts['peak'], 4)
+        self.assertEqual(sorted(row[0] for row in results), list(range(8)))
         self.assertFalse(any(row[3] for row in results))
 
     def test_failed_scan_reuses_completed_requests_and_still_runs_missing_work(self):

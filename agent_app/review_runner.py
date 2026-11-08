@@ -52,7 +52,7 @@ class ReviewCache:
                 except OSError: pass
 
 
-def review_batches(contexts, generate, *, cache=None, max_workers=2):
+def review_batches(contexts, generate, *, cache=None, max_workers=4):
     """Yield completed requests; stop submitting after an error, retain in-flight work."""
     def request(index):
         context = contexts[index]
@@ -64,7 +64,7 @@ def review_batches(contexts, generate, *, cache=None, max_workers=2):
             cache.put(context, response)
         return response, False
 
-    workers = max(1, min(2, max_workers))
+    workers = max(1, min(4, max_workers))
     with ThreadPoolExecutor(max_workers=workers, thread_name_prefix='code-review') as pool:
         pending, next_index, failed = {}, 0, False
         while pending or (next_index < len(contexts) and not failed):
