@@ -24,6 +24,11 @@ REQUIRED_DISABLED = {"shell_tool", "unified_exec", "code_mode_host", "apps", "pl
 _auth_cache = {}
 
 
+class ReviewTimeout(ValueError):
+    """A single request timed out; other independent requests may continue."""
+    retryable = True
+
+
 def _run(command, **kwargs):
     return subprocess.run(command, text=True, encoding="utf-8", errors="replace",
                           capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
@@ -100,7 +105,7 @@ def generate(context, *, instructions, output_schema, timeout=100):
         try:
             response = _run(command, input=prompt, cwd=work, timeout=timeout, env=child_env)
         except subprocess.TimeoutExpired:
-            raise ValueError("Codex 응답 시간이 초과됐어요. 잠시 후 다시 시도해 주세요.") from None
+            raise ReviewTimeout("Codex 응답 시간이 초과됐어요. 잠시 후 다시 시도해 주세요.") from None
         except OSError:
             raise ValueError("Codex를 실행하지 못했어요. 설치 경로와 로그인 상태를 확인해 주세요.") from None
         if response.returncode or not output.exists():

@@ -99,7 +99,7 @@ class ReviewBubble(RoundedSurface):
         self.character.open_panel()
 
     def compact(self):
-        return self.mode in {'chatter','greeting','interaction'}
+        return self.mode in {'chatter','greeting','interaction','progress'}
 
     def sync_actions(self):
         self.shortcuts_row.setVisible(not self.compact() and not bool(self.character.panel.service.repos()))
@@ -131,7 +131,7 @@ class ReviewBubble(RoundedSurface):
         self.expiry.stop()
         self.mode, self.target_repo, self.remaining_ms = mode, repo_id, auto_hide_ms
         chatting = self.compact()
-        self.overview.setVisible(mode in {'greeting', 'notice', 'progress'} and bool(self.character.panel.service.repos()))
+        self.overview.setVisible(mode in {'greeting', 'notice'} and bool(self.character.panel.service.repos()))
         self.details.setText("알림 보기" if mode == "notice" else "브리핑 열기")
         self.bubble_header.setVisible(not chatting)
         self.bubble_footer.setVisible(not chatting)
@@ -145,7 +145,9 @@ class ReviewBubble(RoundedSurface):
         self.message.ensurePolished()
         width=300 if chatting else 388
         if chatting: text=sentence_lines(text,width-2*margin-34,self.message.fontMetrics())
-        self.message.present(text, animate=not self.character.preferences["reduced_motion"])
+        # Progress can change before a sentence finishes. Never restart its
+        # typewriter on every update or leave a lone first letter on screen.
+        self.message.present(text, animate=mode != 'progress' and not self.character.preferences["reduced_motion"])
         self.message.setFixedHeight(self.message.heightForWidth(width-2*margin-(34 if chatting else 0)))
         self.layout().invalidate()
         if chatting:

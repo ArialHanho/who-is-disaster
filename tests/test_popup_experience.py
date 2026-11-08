@@ -81,6 +81,27 @@ class PopupExperienceTests(unittest.TestCase):
         self.bubble.show_message('바로 답이 안 나와도 괜찮아요. 잠깐 두고 봐요.',mode='chatter')
         self.assertEqual(self.bubble.message.full_text,'바로 답이 안 나와도 괜찮아요.\n잠깐 두고 봐요.')
 
+    def test_thinking_progress_is_readable_immediately_and_has_only_close(self):
+        self.service.save_repo('https://github.com/example/app')
+        self.bubble.show_message('AI가 코드를 살펴보고 있어요.', mode='progress')
+        self.bubble.show()
+        self.app.processEvents()
+        for text in ('전체 소스 1/66묶음 완료', '전체 소스 2/66묶음 완료'):
+            self.bubble.show_message(text, mode='progress')
+            self.assertEqual(self.bubble.message.visible_text, text)
+            self.assertFalse(self.bubble.message.timer.isActive())
+            self.assertFalse(self.bubble.message.typing)
+        self.assertTrue(self.bubble.chat_close.isVisible())
+        for widget in (self.bubble.bubble_header, self.bubble.bubble_footer,
+                       self.bubble.overview, self.bubble.shortcuts_row,
+                       self.bubble.reading_hint, self.bubble.skip):
+            self.assertFalse(widget.isVisible())
+        self.assertEqual(self.bubble.width(), 300)
+        self.assertLess(self.bubble.height(), 150)
+        self.bubble.show_message('새 코드 문제가 있어요.', mode='notice')
+        self.assertTrue(self.bubble.message.typing)
+        self.assertTrue(self.bubble.overview.isVisible())
+
     def test_background_progress_preserves_notice_and_details_open_correct_repo(self):
         ids = [self.service.save_repo(f"https://github.com/example/repo-{i}") for i in range(2)]
         self.panel.open_tab("settings")

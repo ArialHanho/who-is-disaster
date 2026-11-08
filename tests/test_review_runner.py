@@ -4,6 +4,7 @@ import tempfile
 import threading
 import unittest
 from agent_app.review_runner import ReviewCache, review_batches
+from agent_app.codex_provider import ReviewTimeout
 
 
 def response():
@@ -11,6 +12,29 @@ def response():
 
 
 class ReviewRunnerTests(unittest.TestCase):
+    def test_timeout_runs_other_work_first_and_retries_only_the_missing_request(self):
+        calls = []
+        def generate(context):
+            calls.append(context['id'])
+            if context['id'] == 0 and calls.count(0) == 1:
+                raise ReviewTimeout('slow request')
+            return response()
+        results = list(review_batches([{'id':n} for n in range(3)], generate, max_workers=1))
+        self.assertEqual(calls, [0, 1, 2, 0])
+        self.assertEqual([row[0] for row in results], [1, 2, 0])
+        self.assertFalse(any(row[3] for row in results))
+
+    def test_repeated_timeout_is_reported_without_abandoning_other_requests(self):
+        calls = []
+        def generate(context):
+            calls.append(context['id'])
+            if context['id'] == 0: raise ReviewTimeout('still slow')
+            return response()
+        results = list(review_batches([{'id':n} for n in range(3)], generate, max_workers=1))
+        self.assertEqual(calls, [0, 1, 2, 0])
+        self.assertEqual(sum(bool(row[3]) for row in results), 1)
+        self.assertEqual(results[-1][3], 'still slow')
+
     def test_four_requests_overlap_but_never_exceed_four(self):
         gate = threading.Barrier(4)
         lock = threading.Lock()

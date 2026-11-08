@@ -1,5 +1,6 @@
 """Bounded concurrent review and local checkpoints for identical requests."""
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from collections import deque
 import hashlib
 import json
 from pathlib import Path
@@ -53,7 +54,11 @@ class ReviewCache:
 
 
 def review_batches(contexts, generate, *, cache=None, max_workers=4):
-    """Yield completed requests; stop submitting after an error, retain in-flight work."""
+    """Continue past one timeout and retry it once after pending work.
+
+    Authentication, quota and other fatal errors still stop new requests.
+    Successful in-flight requests are always retained.
+    """
     def request(index):
         context = contexts[index]
         cached = cache.get(context) if cache else None
@@ -66,18 +71,23 @@ def review_batches(contexts, generate, *, cache=None, max_workers=4):
 
     workers = max(1, min(4, max_workers))
     with ThreadPoolExecutor(max_workers=workers, thread_name_prefix='code-review') as pool:
-        pending, next_index, failed = {}, 0, False
-        while pending or (next_index < len(contexts) and not failed):
-            while not failed and next_index < len(contexts) and len(pending) < workers:
-                pending[pool.submit(request, next_index)] = next_index
-                next_index += 1
+        pending, queued, failed = {}, deque((i, 0) for i in range(len(contexts))), False
+        while pending or (queued and not failed):
+            while not failed and queued and len(pending) < workers:
+                index, attempt = queued.popleft()
+                pending[pool.submit(request, index)] = (index, attempt)
             done, _ = wait(pending, return_when=FIRST_COMPLETED)
             for future in sorted(done, key=lambda f:pending[f]):
-                index = pending.pop(future)
+                index, attempt = pending.pop(future)
                 try:
                     response, reused = future.result()
                 except (ValueError, OSError) as exc:
-                    failed = True
+                    if getattr(exc, 'retryable', False):
+                        if not attempt and not failed:
+                            queued.append((index, 1))
+                            continue
+                    else:
+                        failed = True
                     yield index, None, False, str(exc)
                 else:
                     yield index, response, reused, ''
