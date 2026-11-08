@@ -15,6 +15,7 @@ jobs:
     env:
       PYTHONUTF8: '1'
       QT_QPA_PLATFORM: offscreen
+      QT_QPA_FONTDIR: C:\Windows\Fonts
       QT_OPENGL: software
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
