@@ -172,7 +172,8 @@ class ResidentExperienceTests(unittest.TestCase):
         replacement.close()
 
     def test_restore_does_not_toggle_or_overlap_panel_and_details_close_first(self):
-        with tempfile.TemporaryDirectory() as temp:
+        # Navigation is independent of the asynchronous Git history service.
+        with tempfile.TemporaryDirectory() as temp, patch('agent_app.finding_history_ui.FindingHistory.load', lambda self:None):
             service = ReviewService(Path(temp)/"db")
             rid = service.save_repo("https://github.com/example/app")
             service.record(service.repo(rid), snapshot({"app.py": "value = 1"}), "one", {"findings": [finding()]})
@@ -183,13 +184,15 @@ class ResidentExperienceTests(unittest.TestCase):
             try:
                 sprite.open_panel()
                 sprite.restore()
+                self.app.processEvents()
                 self.assertTrue(panel.isVisible())
                 self.assertFalse(sprite.bubble.isVisible())
                 fid = service.findings(rid)[0]["id"]
                 panel.toggle_finding(fid)
+                self.app.processEvents()
                 self.assertEqual(len(panel.expanded), 1)
                 self.assertEqual(service.pending_notice(rid)["findings"], [])
-                heading = next(w for w in panel.findChildren(QLabel) if "펼치기 또는 접기" in w.accessibleName())
+                heading = next(w for w in panel.findChildren(QLabel) if w.isVisible() and "펼치기 또는 접기" in w.accessibleName())
                 QTest.keyClick(heading, Qt.Key.Key_Escape)
                 self.assertTrue(panel.isVisible())
                 self.assertFalse(panel.expanded)
