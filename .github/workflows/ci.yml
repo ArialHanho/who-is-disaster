@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   test:
-    runs-on: windows-latest
+    runs-on: windows-2022
     timeout-minutes: 15
     env:
       PYTHONUTF8: '1'
@@ -29,3 +29,8 @@ jobs:
           $gitDir = Split-Path (Get-Command git).Source
           $env:PATH = "$(Split-Path $python);$gitDir;$env:SystemRoot\System32;$env:SystemRoot"
           & $python -u -X faulthandler -m unittest discover -s tests -v
+          $testExit = $LASTEXITCODE
+          if ($testExit -ne 0) {
+            Get-WinEvent -FilterHashtable @{LogName='Application'; ProviderName='Application Error'; StartTime=(Get-Date).AddMinutes(-10)} -ErrorAction SilentlyContinue | Select-Object -First 3 -ExpandProperty Message
+          }
+          exit $testExit
