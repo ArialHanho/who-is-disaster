@@ -2,6 +2,10 @@
 .env
 .env.*
 !.env.example
+.codex/
+auth.json
+credentials.json
+hosts.yml
 .venv/
 .local-python
 __pycache__/

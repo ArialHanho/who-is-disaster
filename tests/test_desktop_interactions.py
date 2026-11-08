@@ -151,7 +151,7 @@ class DesktopInteractionsTests(unittest.TestCase):
         self.sprite.say_touch_reaction()
         self.assertEqual(self.sprite.bubble.message.full_text,'분석 중이에요')
 
-    def test_photo_reactions_keep_original_art_instead_of_switching_poses(self):
+    def test_drag_reactions_keep_selected_move_art_unwarped_and_pet_still_jumps(self):
         from PySide6.QtGui import QImage,QColor
         from agent_app.character_settings import install_pack,save_preferences
         mapping={'idle':'red','dragging':'blue','happy':'green','greeting':'blue','thinking':'blue','attention':'green'}
@@ -168,6 +168,8 @@ class DesktopInteractionsTests(unittest.TestCase):
         self.sprite.mousePressEvent(self.mouse(QEvent.Type.MouseButtonPress,QPoint(60,90)))
         self.assertTrue(self.sprite.preserve_gesture_art)
         self.sprite.dragged=True
+        moving=self.sprite.skin.frame('dragging',0).cacheKey()
+        self.sprite.character_art('dragging');self.sprite.frame+=4
         from agent_app.character_render import draw_character
         for action,kind in (('drag_fast','startle'),('drag_hold','wriggle')):
             self.sprite.say_reaction(action)
@@ -177,9 +179,9 @@ class DesktopInteractionsTests(unittest.TestCase):
             with patch('agent_app.character.draw_character',wraps=draw_character) as draw:
                 self.sprite.grab()
                 options=draw.call_args.kwargs
-                self.assertEqual(options['custom'].cacheKey(),original)
+                self.assertEqual(options['custom'].cacheKey(),moving)
                 self.assertEqual(len(options['layers']),1)
-                self.assertEqual(options['layers'][0][0].cacheKey(),original)
+                self.assertEqual(options['layers'][0][0].cacheKey(),moving)
                 self.assertEqual((options['pose'].angle,options['pose'].stretch),(0,1))
         self.sprite.mouseReleaseEvent(self.mouse(QEvent.Type.MouseButtonRelease,QPoint(60,90),buttons=Qt.MouseButton.NoButton))
         self.assertEqual(self.sprite.gesture_motion.kind,'land')
@@ -190,6 +192,37 @@ class DesktopInteractionsTests(unittest.TestCase):
         custom,_,_=self.sprite.character_art('happy')
         self.assertEqual(custom.cacheKey(),self.sprite.skin.frame('happy',0).cacheKey())
         self.assertNotEqual(custom.cacheKey(),original)
+
+    def test_drag_uses_preview_art_even_while_reviewing_and_notices_do_not_block_motion(self):
+        from PySide6.QtGui import QImage,QColor
+        from agent_app.character_settings import install_pack,save_preferences
+        pack=self.root/'drag-pack';pack.mkdir()
+        for name,color in [('idle','blue'),('dragging','orange')]:
+            image=QImage(64,128,QImage.Format.Format_ARGB32);image.fill(QColor(color));image.save(str(pack/(name+'.png')))
+        animations={state:{'frames':[file+'.png',file+'.png'],'fps':2} for state,file in [('idle','idle'),('thinking','idle'),('attention','idle'),('dragging','dragging')]}
+        (pack/'character.json').write_text(json.dumps({'name':'fixture','layout':'portrait','motion':'poses','animations':animations}),encoding='utf-8')
+        key=install_pack(self.root,pack/'character.json')
+        self.sprite.apply_preferences(save_preferences(self.root,{**self.sprite.preferences,'character':key}))
+        self.sprite.timer.stop()
+        self.sprite.actions.begin('thinking')
+        self.sprite.bubble.show_message('분석 중',mode='progress');self.sprite.bubble.show()
+        self.sprite.mousePressEvent(self.mouse(QEvent.Type.MouseButtonPress,QPoint(60,90)))
+        self.sprite.mouseMoveEvent(self.mouse(QEvent.Type.MouseMove,QPoint(160,90)))
+        self.sprite.actions.transient=None
+        self.assertEqual(self.sprite.display_state(),'dragging')
+        expected=self.sprite.skin.frame('dragging',0).cacheKey()
+        self.sprite.character_art('dragging');self.sprite.frame+=4
+        custom,layers,pose=self.sprite.character_art('dragging')
+        self.assertEqual(custom.cacheKey(),expected)
+        self.assertEqual(layers[-1][0].cacheKey(),expected)
+        self.assertNotEqual(expected,self.sprite.skin.frame('idle',0).cacheKey())
+        self.sprite.say_reaction('drag_fast')
+        self.assertEqual(self.sprite.gesture_motion.kind,'startle')
+        self.assertEqual(self.sprite.bubble.message.full_text,'분석 중')
+        self.sprite.say_reaction('drag_hold')
+        self.assertEqual(self.sprite.gesture_motion.kind,'wriggle')
+        self.sprite.mouseReleaseEvent(self.mouse(QEvent.Type.MouseButtonRelease,QPoint(60,90),buttons=Qt.MouseButton.NoButton))
+        self.assertEqual(self.sprite.gesture_motion.kind,'land')
 
     def test_hour_snooze_is_persistent_and_preserves_code_notice(self):
         chat=self.panel.idle_chat

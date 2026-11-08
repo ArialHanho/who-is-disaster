@@ -245,7 +245,7 @@ class ReviewService:
                     f["title"] + ": " + f["detail"][:400] for f in accepted[:12])
             if progress: progress("thinking", "수정된 코드를 비교하고 있어요" if recheck_only else "과한 설계·순환·변경 누락을 분석하고 있어요")
             result = ({'findings': [], 'summary': '선택한 항목의 수정 여부를 현재 코드로 확인했어요.', 'ai_error': '', 'recheck_only': True}
-                      if recheck_only else self.analyzer(snapshot, rules, **({'progress':progress} if self.analyzer is analyze else {})))
+                      if recheck_only else self.analyzer(snapshot, rules, **({'progress':progress, 'cache_dir':None if force else self.root/'review-cache'} if self.analyzer is analyze else {})))
             result.update({"repo_id": repo_id, "head": snapshot["head"], "base": snapshot["base"], "web": snapshot["web"], "cached": False})
             result["selection"] = selection
             result["pull_requests"] = pulls

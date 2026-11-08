@@ -17,6 +17,7 @@ class PhotoGestureMotion:
 
     def __init__(self):
         self.kind, self.age, self.active = None, 0, False
+        self.elapsed = 0
         self.x = self.y = self.vx = self.vy = 0
 
     def trigger(self, kind):
@@ -29,21 +30,28 @@ class PhotoGestureMotion:
         change = (velocity+22*offset)*dt
         return target+(offset+change)*decay, (velocity-22*change)*decay
 
-    def step(self, dt, *, held=False, reduced=False):
+    def step(self, dt, *, held=False, moving=False, drag=0, reduced=False):
         if reduced:
             self.__init__()
             return PortraitPose()
         dt = max(0, min(dt, .05))
         self.age += dt
+        self.elapsed += dt
         duration = self.DURATIONS.get(self.kind, 0)
+        if self.kind == 'wriggle' and held and self.age >= duration:
+            self.age %= duration
         x, y = 0, -2 if held else 0
+        if held and moving:
+            phase = self.elapsed * math.tau / 1.15
+            x = -max(-3, min(3, drag)) + 2.4*math.sin(phase)
+            y = -4 - 1.4*(1-math.cos(phase))
         if duration and self.age < duration:
             u = self.age/duration
             envelope = math.sin(math.pi*u)**2
             if self.kind == 'startle':
-                x, y = 2.5*math.sin(math.tau*u)*envelope, y-8*envelope
+                x, y = x+2.5*math.sin(math.tau*u)*envelope, y-8*envelope
             elif self.kind == 'wriggle':
-                x = 5*math.sin(2*math.tau*u)*envelope
+                x += 5*math.sin(2*math.tau*u)*envelope
                 y -= 1.8*(1-math.cos(2*math.tau*u))*envelope
             elif self.kind == 'pet':
                 y -= 3.5*envelope

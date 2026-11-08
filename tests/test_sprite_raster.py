@@ -64,6 +64,15 @@ class SpriteRasterTests(unittest.TestCase):
         motion.trigger('wriggle')
         self.assertEqual(motion.step(1/60,held=True,reduced=True),PortraitPose())
 
+    def test_drag_keeps_moving_while_held_without_warping_the_photo(self):
+        motion=PhotoGestureMotion()
+        frames=[motion.step(1/60,held=True,moving=True,drag=2) for _ in range(180)]
+        self.assertGreater(max(p.shift for p in frames[60:])-min(p.shift for p in frames[60:]),3)
+        self.assertTrue(all(p.angle==0 and p.stretch==1 for p in frames))
+        motion.trigger('wriggle')
+        for _ in range(150):motion.step(1/60,held=True)
+        self.assertEqual(motion.kind,'wriggle')
+
     def test_photo_gesture_pixels_match_the_same_raster_at_display_scaling(self):
         from PySide6.QtCore import QRectF, Qt
         from PySide6.QtGui import QPainter

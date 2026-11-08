@@ -3,6 +3,7 @@ import ast
 from collections import deque
 import hashlib
 import json
+import os
 from pathlib import PurePosixPath
 import posixpath
 import re
@@ -11,9 +12,10 @@ from . import codex_provider
 from .review_source import requirements_file
 from .review_context import collect_context, excerpt
 from .review_batches import complete_contexts
+from .review_runner import ReviewCache, review_batches
 
 CATEGORIES = {"structure": "구조 문제", "placeholder_code": "더미 코드", "overengineering": "과한 설계", "circular_dependency": "순환 의존성", "missing_change": "변경 누락", "structural_conflict": "변경 충돌", "feature": "기능 추가"}
-VERSION = "code-review-11-complete-source"
+VERSION = "code-review-12-parallel-source"
 
 
 def fingerprint(finding):
@@ -387,7 +389,7 @@ parallel_changes가 있으면 여러 AI가 각자 만든 변경을 함께 검토
 independent=true인 브랜치는 공통 이력을 읽을 수 없어 통합본에 포함되지 않은 별도 원문이다. 그 브랜치 내부의 문제를 검토하되 다른 브랜치와 함께 실행된다고 가정하지 않는다. 여러 묶음으로 분석할 때도 combined는 전체 가상 통합본이며 이 묶음의 원문을 중심으로 교차 변경을 점검한다.
 좋은 수정, 정상적인 버그 수정, 정리, 테스트 추가, 스타일 취향, 일반적 개선 제안은 findings에 넣지 않는다. 경고를 억지로 만들지 말고 문제가 없으면 빈 배열을 반환한다. 검토 불가능한 부분은 summary에 적는다.
 기능 소개·좋은 변경 요약은 findings에 넣지 않는다. 코드상 문제만 반환한다.
-최대 6개만 반환한다. evidence는 제공된 코드의 실제 path와 1부터 시작하는 line, 해당 줄의 정확한 부분 문자열 quote(240자 이하)를 사용한다. 근거가 없으면 항목을 생략한다. key는 커밋이 바뀌어도 같은 문제에 유지되는 category:module:symbol 형식의 짧은 식별자다.
+한 묶음에서 근거가 확실한 항목을 최대 16개 반환한다. evidence는 제공된 코드의 실제 path와 1부터 시작하는 line, 해당 줄의 정확한 부분 문자열 quote(240자 이하)를 사용한다. 근거가 없으면 항목을 생략한다. key는 커밋이 바뀌어도 같은 문제에 유지되는 category:module:symbol 형식의 짧은 식별자다.
 각 evidence에 files의 view 값을 그대로 지정한다. combined는 가상 통합본의 줄 번호이며 실제 브랜치 원문과 다를 수 있다. 동시 변경 문제는 관련 변경의 이름과 양쪽 근거, 수정해야 할 쪽을 instruction에 명시한다. 실제 병합·수정은 수행하지 않는다.
 오버엔지니어링은 warning, 실제 오류는 problem. 확신이 부족하면 medium/low로 표시한다.
 high는 문제 구현과 실제 호출·비교 대상 등 서로 다른 코드 위치를 최소 두 곳 인용할 때만 쓴다. 같은 코드를 여러 view에서 인용하거나 주석만 인용한 것은 추가 근거가 아니다. 근거 개수만으로 high를 주지 말고 실제 영향까지 설명한다. 필요한 사용처가 발췌에 없으면 medium/low로 남긴다.
@@ -400,7 +402,7 @@ def validate_ai(reply, snapshot, context):
     findings, rejected = [], 0
     allowed = {(f.get("view", "combined"), f["path"]): f for f in context["files"]}
     views = {"combined": snapshot, **snapshot.get("views", {})}
-    for item in reply["findings"][:6]:
+    for item in reply["findings"][:16]:
         if not isinstance(item, dict) or item.get("category") not in {"structure", "placeholder_code", "overengineering", "missing_change", "structural_conflict", "feature"}:
             rejected += 1
             continue
@@ -478,7 +480,7 @@ def contextual_limits(item, context, views):
     return list(dict.fromkeys(limits))
 
 
-def analyze(snapshot, rules="", *, progress=None):
+def analyze(snapshot, rules="", *, progress=None, cache_dir=None, max_workers=2):
     static = integration_review(snapshot)
     views = snapshot.get("views", {})
     active = [(k, v) for k, v in views.items() if k != "base" and (v["changed"] or v["deleted"] or v.get("independent"))]
@@ -489,37 +491,58 @@ def analyze(snapshot, rules="", *, progress=None):
     coverage['limited_views'] = [{'view': key, 'label': view.get('label', key), 'omitted_files': view.get('omitted', 0)}
                                  for key, view in views.items() if view.get('omitted', 0)]
     coverage['omitted_files'] = max(coverage['omitted_files'], sum(v['omitted_files'] for v in coverage['limited_views']))
-    coverage.update(views=len(views), ai_batches=len(contexts), completed_batches=0,
+    coverage.update(views=len(views), ai_batches=len(contexts), completed_batches=0, reused_batches=0,
                     ai_excerpt_files=sum(c["coverage"]["ai_excerpt_files"] for c in contexts))
     coverage.update(source_coverage, full_source_review=False)
     result = {"findings": static["findings"], "summary": "", "ai_error": "", "usage": {},
               "coverage": coverage, "scope": snapshot["scope"], "head": snapshot["head"]}
+    batch_findings = {}
     try:
         ready = codex_provider.status()
         if not ready["ready"] or "ChatGPT" not in ready["label"]:
             raise ValueError("기존 ChatGPT 로그인으로 Codex에 연결해 주세요: codex login. API 과금으로 자동 전환하지 않아요.")
-        summaries, seen = [], {f["fingerprint"] for f in result["findings"]}
+        summaries = {}
+        policy = [VERSION, os.getenv('CODEX_MODEL', ''), INSTRUCTIONS, REVIEW_SCHEMA]
+        cache = ReviewCache(cache_dir, policy) if cache_dir is not None else None
         for index, context in enumerate(contexts, 1):
-            if progress: progress('thinking',f"전체 소스 검토 {index}/{len(contexts)}묶음 · {coverage['source_files']}개 파일")
-            context["batch"] = {"index": index, "total": len(contexts), "all_view_count": len(views)}
-            response = codex_provider.generate(context, instructions=INSTRUCTIONS, output_schema=REVIEW_SCHEMA, timeout=150)
+            context['batch'] = {'index':index, 'total':len(contexts), 'all_view_count':len(views)}
+        def report():
+            if progress:
+                text = f"전체 소스 {coverage['completed_batches']}/{len(contexts)}묶음 완료"
+                if coverage['reused_batches']: text += f" · 재사용 {coverage['reused_batches']}"
+                progress('thinking', text)
+        report()
+        def generate(context):
+            return codex_provider.generate(context, instructions=INSTRUCTIONS, output_schema=REVIEW_SCHEMA, timeout=180)
+        for index, response, reused, error in review_batches(contexts, generate, cache=cache, max_workers=max_workers):
+            if error:
+                result['ai_error'] = result['ai_error'] or error
+                continue
+            context = contexts[index]
             findings, rejected = validate_ai(response["result"], snapshot, context)
-            for f in findings:
-                if f["fingerprint"] not in seen:
-                    result["findings"].append(f)
-                    seen.add(f["fingerprint"])
-            summaries.append(response["result"]["summary"][:500])
+            batch_findings[index] = findings
+            summaries[index] = response["result"]["summary"][:500]
             if rejected:
-                summaries.append(f"근거가 불완전한 항목 {rejected}개는 표시하지 않았어요.")
+                summaries[index] += f"\n근거가 불완전한 항목 {rejected}개는 표시하지 않았어요."
             for key, value in response["usage"].items():
                 if isinstance(value, (int, float)):
                     result["usage"][key] = result["usage"].get(key, 0) + value
-            coverage["completed_batches"] = index
-        result["summary"] = "\n".join(summaries)
-        coverage['full_source_review'] = not coverage['omitted_files']
+            coverage["completed_batches"] += 1
+            coverage['reused_batches'] += int(reused)
+            report()
+        result["summary"] = "\n".join(summaries[i] for i in sorted(summaries))
+        coverage['full_source_review'] = not result['ai_error'] and coverage['completed_batches'] == len(contexts) and not coverage['omitted_files']
     except (ValueError, OSError) as exc:
         result["ai_error"] = str(exc)
+    if result['ai_error']:
         result["summary"] = f"정적 분석 완료 · AI 검토 {coverage['completed_batches']}/{len(contexts)}묶음 완료. 나머지 검토는 아직 완료되지 않았어요."
+    # Keep focused review precedence independent of network completion order.
+    seen = {f['fingerprint'] for f in result['findings']}
+    for index in sorted(batch_findings):
+        for finding in batch_findings[index]:
+            if finding['fingerprint'] not in seen:
+                result['findings'].append(finding)
+                seen.add(finding['fingerprint'])
     return result
 
 

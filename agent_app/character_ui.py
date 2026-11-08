@@ -6,7 +6,7 @@ from PySide6.QtWidgets import QWidget, QDialog, QVBoxLayout, QHBoxLayout, QCombo
 from .character_settings import BUILTINS, SCALES, load_preferences, save_preferences, packs, install_pack
 from .character_render import draw_character
 from .skin import selected_skin
-from .portrait_motion import PortraitMotion, PortraitPose, character_geometry
+from .portrait_motion import PortraitMotion, PortraitPose, PhotoGestureMotion, character_geometry
 from .review_theme import STYLE, BROWN, MUTED, button, label, size_popup, scroll_body, FlowLayout, RoundedDialog
 
 
@@ -16,6 +16,7 @@ class CharacterPreview(QWidget):
         self.root, self.config, self.preferences = root, dict(config), preferences
         self.frame, self.state = 0, "idle"
         self.motion, self.pose, self.last_tick = PortraitMotion(), PortraitPose(), time.monotonic()
+        self.gesture_motion = PhotoGestureMotion()
         self.setFixedHeight(214)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setToolTip("눌러서 토닥여 보세요")
@@ -31,7 +32,9 @@ class CharacterPreview(QWidget):
         dt, self.last_tick = min(.05, max(0, now-self.last_tick)), now
         if not self.isVisible(): return
         self.frame += dt*10
-        if self.skin.continuous_motion: self.pose = self.motion.step(dt, self.state, expressive=self.skin.pose_motion)
+        if self.skin.continuous_motion:
+            self.pose = (self.gesture_motion.step(dt, held=True, moving=True, reduced=self.preferences['reduced_motion'])
+                         if self.state == 'dragging' else self.motion.step(dt, self.state, expressive=self.skin.pose_motion))
         self.update()
 
     def change(self, preferences):
@@ -49,6 +52,7 @@ class CharacterPreview(QWidget):
     def action(self, state):
         self.frame, self.state = 0, state
         self.motion.age = 0
+        self.gesture_motion = PhotoGestureMotion()
         self.skin.restart_pose()
         self.update()
 
@@ -66,6 +70,7 @@ class CharacterPreview(QWidget):
                        custom=self.skin.frame(self.state, self.frame), motion=not self.preferences["reduced_motion"], height=height,
                        pose=self.pose if self.skin.continuous_motion else None,
                        layers=self.skin.layers(self.state,self.frame),stage_width=width)
+        p.end()
 
 
 class CharacterDialog(RoundedDialog):

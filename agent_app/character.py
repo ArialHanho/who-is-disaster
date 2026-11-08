@@ -123,7 +123,7 @@ class DesktopCharacter(QWidget):
         if state != self.last_action:
             self.last_action, self.action_frame = state, self.frame
         if self.preserve_gesture_art:
-            self.gesture_pose = self.gesture_motion.step(dt, held=self.pressed, reduced=self.preferences['reduced_motion'])
+            self.gesture_pose = self.gesture_motion.step(dt, held=self.pressed, moving=self.dragged, drag=self.drag_lean, reduced=self.preferences['reduced_motion'])
             if not self.pressed and not self.gesture_motion.active and state not in {'dragging','greeting','happy'}:
                 self.preserve_gesture_art = False
                 self.motion, self.pose = PortraitMotion(), PortraitPose()
@@ -133,12 +133,10 @@ class DesktopCharacter(QWidget):
         self.update()
 
     def character_art(self, state):
-        art_state = 'idle' if self.preserve_gesture_art else state
+        # Use the same existing action art as the settings preview while dragging.
+        art_state = ('dragging' if self.dragged else 'idle') if self.preserve_gesture_art else state
         custom = self.skin.frame(art_state, self.frame - self.action_frame)
-        if self.preserve_gesture_art and self.skin.pose_motion:
-            layers = [(custom, 1, self.skin.pose_scales.get('idle', 1))]
-        else:
-            layers = self.skin.layers(art_state, self.frame)
+        layers = self.skin.layers(art_state, self.frame)
         pose = (self.gesture_pose if self.preserve_gesture_art else self.pose) if self.skin.continuous_motion else None
         return custom, layers, pose
 
@@ -216,6 +214,7 @@ class DesktopCharacter(QWidget):
                 self.move(self.window_start + delta)
                 if fast and not self.fast_dragged:
                     self.fast_dragged = True
+                    self.react_motion('drag_fast')
                     if not starting and self.config['kind']=='code':
                         self.fast_drag_timer.start(max(1, math.ceil((1.2-(now-self.last_reaction_at))*1000)))
                 if starting and self.config['kind']=='code':
@@ -265,16 +264,20 @@ class DesktopCharacter(QWidget):
             self.skin.restart_pose()
         self.say_reaction('pet')
 
-    def say_reaction(self, action, *, auto_hide_ms=5000):
+    def react_motion(self, action):
+        if action in {'hold','drag_hold'} and self.skin.continuous_motion and not self.preserve_gesture_art:
+            self.preserve_gesture_art = True
+            self.skin.reset_pose_to_idle()
+        if self.preserve_gesture_art:
+            reaction = {'drag_fast':'startle', 'hold':'wriggle', 'drag_hold':'wriggle', 'pet':'pet'}.get(action)
+            if reaction: self.gesture_motion.trigger(reaction)
+
+    def say_reaction(self, action, *, auto_hide_ms=5000, react=True):
+        # Important notices may suppress chatter, but must not suppress movement.
+        if react: self.react_motion(action)
         important=self.config['kind']=='code' and self.bubble.isVisible() and self.bubble.mode in {'notice','progress'}
         if self.isVisible() and hasattr(self.bubble, "show_message") and not important and not self.panel.isVisible() and not QApplication.activeModalWidget():
             text = self.dialogue.choose(action)
-            if action in {'hold','drag_hold'} and self.skin.continuous_motion and not self.preserve_gesture_art:
-                self.preserve_gesture_art = True
-                self.skin.reset_pose_to_idle()
-            if self.preserve_gesture_art:
-                reaction = {'drag_fast':'startle', 'hold':'wriggle', 'drag_hold':'wriggle', 'pet':'pet'}.get(action)
-                if reaction: self.gesture_motion.trigger(reaction)
             self.last_reaction_at = time.monotonic()
             if self.config["kind"] == "code": self.bubble.show_message(text, mode="interaction", auto_hide_ms=auto_hide_ms)
             else: self.bubble.show_message(text)
@@ -287,7 +290,7 @@ class DesktopCharacter(QWidget):
         if remaining > 0:
             self.fast_drag_timer.start(math.ceil(remaining*1000))
             return
-        self.say_reaction('drag_fast', auto_hide_ms=0)
+        self.say_reaction('drag_fast', auto_hide_ms=0, react=False)
 
     def say_long_hold(self):
         if not self.pressed or self.config['kind']!='code': return
@@ -309,6 +312,7 @@ class DesktopCharacter(QWidget):
         if first: self.say_touch_reaction()
 
     def display_state(self):
+        if self.pressed and self.dragged: return 'dragging'
         if self.pose_demo and time.monotonic() < self.pose_demo[1]: return self.pose_demo[0]
         self.pose_demo = None
         return self.actions.state

@@ -6,6 +6,10 @@ file contents across refs share a pass; each distinct version is retained.
 import hashlib
 import re
 
+SOURCE_CHUNK_CHARS = 56000
+SOURCE_BATCH_CHARS = 72000
+SOURCE_BATCH_FILES = 48
+
 
 def source_lines(path, body):
     dependency_hashes = re.fullmatch(r'(requirements|constraints).*\.(txt|lock)', path.rsplit('/', 1)[-1], re.I)
@@ -15,7 +19,7 @@ def source_lines(path, body):
         yield number, line
 
 
-def missing_chunks(view, path, body, shown, budget=16000):
+def missing_chunks(view, path, body, shown, budget=SOURCE_CHUNK_CHARS):
     rows, used = [], 0
     for number, line in source_lines(path, body):
         numbered = f'{number}: {line}'
@@ -62,7 +66,7 @@ def complete_contexts(snapshot, focused, graph, rules, source_excerpt):
     pages, page, used, paths = [], [], 0, set()
     for chunk in chunks:
         identity = (chunk['view'],chunk['path'])
-        if page and (used+len(chunk['code']) > 20000 or identity in paths or len(page)>=12):
+        if page and (used+len(chunk['code']) > SOURCE_BATCH_CHARS or identity in paths or len(page)>=SOURCE_BATCH_FILES):
             pages.append(page);page,used,paths=[],0,set()
         page.append(chunk);used+=len(chunk['code']);paths.add(identity)
     if page:pages.append(page)
@@ -97,5 +101,5 @@ def complete_contexts(snapshot, focused, graph, rules, source_excerpt):
             'review_pass':'Full source continuation. The file chunks retain original line numbers; missing lines are in other batches, not deleted code.',
             'coverage':{'ai_excerpt_files':len(entries)},
         })
-    return contexts, {'source_files':len(snapshot['files']), 'source_versions':len(versions),
+    return contexts, {'source_files':len({path for _,path in identities}), 'source_versions':len(versions),
                       'source_chunks':len(chunks), 'source_pass_batches':len(pages)}
