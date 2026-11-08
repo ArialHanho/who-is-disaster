@@ -57,5 +57,5 @@ jobs:
                       package.extract(entry, root)
           '@ | python -
           $python = (Get-Command python).Source
-          & .data/debugger/amd64/cdb.exe -G -o -c 'sxd 0x8001010d; sxe -c ".echo NATIVE_CRASH; .exr -1; k; q" av; sxe -c ".echo NATIVE_ABORT; .exr -1; k; q" 0x40000015; g' $python -u -X faulthandler -m unittest tests.test_actions_experience.ResidentExperienceTests -v > .data/native-stack.txt 2>&1
+          & .data/debugger/amd64/cdb.exe -g -G -o -c 'sxd 0x8001010d; sxe -c ".echo NATIVE_CRASH; .exr -1; k; q" av; sxe -c ".echo NATIVE_ABORT; .exr -1; k; q" 0x40000015; g' $python -u -X faulthandler -m unittest tests.test_actions_experience.ResidentExperienceTests -v > .data/native-stack.txt 2>&1
           Get-Content .data/native-stack.txt -Tail 160
