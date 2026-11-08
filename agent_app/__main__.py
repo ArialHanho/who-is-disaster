@@ -3,6 +3,9 @@ from .runtime import app_root
 
 def main():
     import sys
+    if '--review-worker' in sys.argv:
+        from .review_process import worker_main
+        raise SystemExit(worker_main(sys.argv[sys.argv.index('--review-worker')+1]))
     if '--version' in sys.argv:
         from . import __version__
         print(__version__)

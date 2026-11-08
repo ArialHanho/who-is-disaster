@@ -1,13 +1,39 @@
 """Recheck tracked issues against current source, without executing reviewed code."""
 import hashlib
 import json
+import os
 import re
 import time
 from . import codex_provider
 from .review_analysis import EVIDENCE_SCHEMA, dependencies, cyclic_components, fingerprint, static_review
 from .review_parallel import sources_metadata
 from .review_source import git
-from .review_context import related_context
+from .review_context import related_context, symbol_index
+from .review_runner import ReviewCache
+
+
+class SourceIndexes:
+    """One immutable snapshot per verification, never cached across source changes."""
+    def __init__(self):
+        self.graphs, self.symbols, self.digests = {}, {}, {}
+
+    def graph(self, view):
+        files = view['files']
+        if id(files) not in self.graphs:
+            self.graphs[id(files)] = dependencies(files)
+        return self.graphs[id(files)]
+
+    def index(self, view):
+        files = view['files']
+        if id(files) not in self.symbols:
+            self.symbols[id(files)] = symbol_index(files)
+        return self.symbols[id(files)]
+
+    def digest(self, view):
+        files = view['files']
+        if id(files) not in self.digests:
+            self.digests[id(files)] = hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest()
+        return self.digests[id(files)]
 
 
 def recover_integrated_views(snapshot, previous):
@@ -53,11 +79,12 @@ def comparison_sources(snapshot):
     return sources
 
 
-def tracking(snapshot, finding):
+def tracking(snapshot, finding, indexes=None):
+    indexes = indexes or SourceIndexes()
     views = views_of(snapshot)
     keys = {e.get("view", "combined") for e in finding["evidence"]}
     scope = sorted(snapshot.get("views", {})) if "combined" in keys or finding.get("origin") == "git-merge-tree" else sorted(keys)
-    digests = {key: hashlib.sha256(json.dumps(views[key]["files"], sort_keys=True).encode()).hexdigest()
+    digests = {key: indexes.digest(views[key])
                for key in keys if key in views}
     return {"scope": scope, "digests": digests}
 
@@ -68,7 +95,8 @@ def check_result(snapshot, state, reason, method, evidence=()):
             "sources": comparison_sources(snapshot), "integrated_refs": snapshot.get("followup_aliases", {}), "execution_verified": False}
 
 
-def scope_problem(snapshot, finding):
+def scope_problem(snapshot, finding, indexes=None):
+    indexes = indexes or SourceIndexes()
     views = views_of(snapshot)
     keys = {e.get("view", "combined") for e in finding["evidence"]}
     previous_scope = finding.get("tracking", {}).get("scope", list(finding.get("sources", {})))
@@ -84,7 +112,7 @@ def scope_problem(snapshot, finding):
             return "가상 통합이 끝나지 않아 이전 문제의 해결 여부를 확인하지 못했어요."
         if finding.get('origin') == 'static' and view.get("omitted", 0):
             return "읽지 못한 파일이 있어 해결을 확정하지 않았어요."
-        if finding.get('origin') == 'static' and dependencies(view["files"])[3]:
+        if finding.get('origin') == 'static' and indexes.graph(view)[3]:
             return "구문을 읽지 못한 코드가 있어 해결을 확정하지 않았어요."
     for e in finding["evidence"]:
         view = views[e.get("view", "combined")]
@@ -93,15 +121,16 @@ def scope_problem(snapshot, finding):
     return ""
 
 
-def static_check(snapshot, finding):
+def static_check(snapshot, finding, indexes=None):
     """Only close a Python cycle when its whole reachable import graph is readable."""
+    indexes = indexes or SourceIndexes()
     paths = {e["path"] for e in finding["evidence"]}
     if finding.get("origin") == "static" and finding["category"] == "circular_dependency":
         if not all(p.endswith(".py") for p in paths):
             return None  # JS/TS regex imports cannot prove a cycle was removed.
         for key in {e.get("view", "combined") for e in finding["evidence"]}:
             view = views_of(snapshot)[key]
-            graph, _, _, _, _ = dependencies(view["files"])
+            graph, _, _, _, _ = indexes.graph(view)
             if any(group & paths for group in cyclic_components(graph)):
                 current = next(f for f in static_review(view)["findings"] if paths.intersection(e["path"] for e in f["evidence"]))
                 return check_result(snapshot, "open", "관련 모듈의 순환 경로가 아직 남아 있어요.", "python-import",
@@ -140,7 +169,8 @@ current_files의 code에는 1부터 줄 번호가 있다. evidence는 제공된 
 reason은 이전과 지금의 차이와 판단 이유를 300자 안으로 적는다. 실행/테스트/CI 통과를 추정하지 않는다. 각 id를 한 번씩 반환한다. 확신이 높지 않으면 uncertain을 선택한다."""
 
 
-def context_for(snapshot, finding):
+def context_for(snapshot, finding, indexes=None):
+    indexes = indexes or SourceIndexes()
     views = views_of(snapshot)
     refs = {(e.get("view", "combined"), e["path"]) for e in finding["evidence"]}
     keys = sorted({key for key, _ in refs})
@@ -149,9 +179,9 @@ def context_for(snapshot, finding):
     candidates = list(sorted(refs))
     for key in keys:
         view = views[key]
-        graph = dependencies(view["files"])[0]
+        graph = indexes.graph(view)[0]
         paths = {path for k, path in refs if k == key}
-        found = related_context(view, paths, graph)
+        found = related_context(view, paths, graph, index=indexes.index(view))
         related = paths | {p for p, roles in found['roles'].items() if roles.intersection({'caller', 'importer', 'dependency'})}
         required.update((key, p) for p in related)
         candidates.extend((key, p) for p in sorted(related) if p in view['files'])
@@ -168,7 +198,7 @@ def context_for(snapshot, finding):
         remaining -= len(clipped)
     complete = all((key, p) in included for key in keys for p in views[key]["files"]) and not any(f["truncated"] for f in files)
     readable = {(f['view'], f['path']) for f in files if not f['truncated']}
-    parse_errors = {(key, path) for key in keys for path in dependencies(views[key]['files'])[3]}
+    parse_errors = {(key, path) for key in keys for path in indexes.graph(views[key])[3]}
     complete = complete and not parse_errors
     local_complete = bool(refs) and refs <= readable and not refs.intersection(parse_errors)
     related_complete = required <= readable and not required.intersection(parse_errors)
@@ -220,9 +250,10 @@ def validate_check(item, context, snapshot):
             'resolution_scope': item.get('resolution_scope', 'repository')}
 
 
-def verify(snapshot, previous, current, *, ai_error="", generate=None, force=False):
+def verify(snapshot, previous, current, *, ai_error="", generate=None, force=False, progress=None, cache_dir=None):
     """Batch changed issues within a source budget; unchanged snapshots consume no AI."""
     checks, pending, error = {}, [], ""
+    indexes = SourceIndexes()
     detected = {f.get("fingerprint") or fingerprint(f) for f in current}
     for finding in previous:
         if finding["category"] == "feature" or finding["disposition"] != "open":
@@ -231,15 +262,15 @@ def verify(snapshot, previous, current, *, ai_error="", generate=None, force=Fal
         if finding.get("fingerprint", fingerprint(finding)) in detected:
             checks[fid] = check_result(snapshot, "open", "최신 코드 분석에서 같은 문제를 다시 확인했어요.", "detected")
             continue
-        problem = scope_problem(snapshot, finding)
+        problem = scope_problem(snapshot, finding, indexes)
         if problem:
             checks[fid] = check_result(snapshot, "uncertain", problem, "coverage")
             continue
-        direct = static_check(snapshot, finding)
+        direct = static_check(snapshot, finding, indexes)
         if direct:
             checks[fid] = direct
             continue
-        same = finding.get("tracking") == tracking(snapshot, finding)
+        same = finding.get("tracking") == tracking(snapshot, finding, indexes)
         if same and not force and finding["state"] in {"open", "resolved"}:
             state = finding["state"] if finding["state"] in {"open", "resolved", "uncertain"} else "uncertain"
             checks[fid] = {**finding.get("verification", {}), **check_result(snapshot, state,
@@ -249,7 +280,7 @@ def verify(snapshot, previous, current, *, ai_error="", generate=None, force=Fal
         if ai_error:
             checks[fid]["reason"] = "AI 분석을 마치지 못해 수정 여부를 보류했어요. 다음 확인 때 다시 시도해요."
         else:
-            pending.append((finding, context_for(snapshot, finding)))
+            pending.append((finding, context_for(snapshot, finding, indexes)))
     if not pending:
         return checks, error
     try:
@@ -267,16 +298,32 @@ def verify(snapshot, previous, current, *, ai_error="", generate=None, force=Fal
             group.append(pair)
             size += cost
         if group: groups.append(group)
+        cache = ReviewCache(cache_dir, [os.getenv('CODEX_MODEL', ''), CHECK_INSTRUCTIONS, CHECK_SCHEMA], fields={'checks':list}) if cache_dir and not force else None
+        completed = 0
         for group in groups:
-            reply = generate({"repository": snapshot["name"], "head": snapshot["head"], "issues": [c for _, c in group]},
-                             instructions=CHECK_INSTRUCTIONS, output_schema=CHECK_SCHEMA, timeout=150)
+            context = {"repository": snapshot["name"], "head": snapshot["head"], "issues": [c for _, c in group]}
+            try:
+                reply = cache.get(context) if cache else None
+                if reply is None:
+                    reply = generate(context, instructions=CHECK_INSTRUCTIONS, output_schema=CHECK_SCHEMA, timeout=150)
+                    if cache: cache.put(context, reply)
+            except codex_provider.ReviewTimeout as exc:
+                if len(group) > 1:
+                    # Smaller retries keep the same evidence; other groups still proceed.
+                    groups.extend([[pair] for pair in group])
+                else:
+                    error = '수정 재확인 미완료: ' + str(exc)
+                    checks[group[0][0]['id']]['reason'] = '응답이 늦어 이 항목은 확인을 보류했어요. 다른 항목은 계속 확인해요.'
+                continue
             items = reply.get("result", {}).get("checks", [])
             for finding, context in group:
                 matching = [item for item in items if isinstance(item, dict) and type(item.get("id")) is int and item["id"] == finding["id"]] if isinstance(items, list) else []
                 checked = validate_check(matching[0], context, snapshot) if len(matching) == 1 else None
-                if checked and checked["state"] == "resolved" and finding["state"] != "resolved" and finding.get("tracking") == tracking(snapshot, finding):
+                if checked and checked["state"] == "resolved" and finding["state"] != "resolved" and finding.get("tracking") == tracking(snapshot, finding, indexes):
                     checked = check_result(snapshot, "uncertain", "관련 코드가 바뀌지 않았어요. 수정 완료보다 이전 경고가 타당했는지 확인이 필요해요.", "unchanged-source")
                 checks[finding["id"]] = checked or check_result(snapshot, "uncertain", "재확인 응답의 현재 코드 근거가 부족해 해결을 확정하지 않았어요.", "invalid-evidence")
+            completed += len(group)
+            if progress: progress('thinking', f'수정 확인 중 · {completed * 100 // len(pending)}%')
     except (ValueError, OSError) as exc:
         error = "수정 재확인 미완료: " + str(exc)
         for finding, _ in pending:

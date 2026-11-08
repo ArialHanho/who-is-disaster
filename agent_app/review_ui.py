@@ -1012,7 +1012,8 @@ class ReviewPanel(RoundedSurface):
         if repo_id in self.recheck_targets: options['recheck_ids'] = self.recheck_targets.pop(repo_id)
         if self.full_scope_scan: options["all_scope"] = True
         self.force_repos.discard(repo_id)
-        worker = Worker(lambda:self.service.review(repo_id, progress=worker.signals.progress.emit, **options))
+        from .review_process import review
+        worker = Worker(lambda:review(self.service, repo_id, progress=worker.signals.progress.emit, **options))
         self.workers.append(worker)
         worker.signals.progress.connect(lambda action, text:self.progress(token, repo["name"], action, text))
         worker.signals.result.connect(self.received)
@@ -1164,6 +1165,8 @@ def run(root):
         panel.idle_chat.close()
         panel.watcher.close()
         panel.queue.clear()
+        from .review_process import cancel_reviews
+        cancel_reviews()
         QThreadPool.globalInstance().waitForDone()
         sprite.skin.close()
         if sprite.restore_tab: sprite.restore_tab.hide()

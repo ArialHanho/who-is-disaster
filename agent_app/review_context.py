@@ -46,10 +46,10 @@ def symbol_index(files):
     return words, calls, definitions, bodies, errors
 
 
-def related_context(view, focus, graph):
+def related_context(view, focus, graph, *, index=None):
     files = view['files']
     focus = set(focus) & files.keys()
-    words, calls, definitions, bodies, errors = symbol_index(files)
+    words, calls, definitions, bodies, errors = symbol_index(files) if index is None else index
     roles, anchors = defaultdict(set), defaultdict(set)
     for path in focus:
         roles[path].add('changed')

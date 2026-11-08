@@ -42,6 +42,9 @@ class RoundedDialog(QDialog):
 def load_fonts():
     global _loaded, _jua
     if not _loaded:
+        # These frameless surfaces are fully styled by STYLE. Use the same raster
+        # base on desktop and Server instead of the native Windows theme plugin.
+        QApplication.instance().setStyle('Fusion')
         QFontDatabase.addApplicationFont(str(Path(__file__).resolve().parents[1] / "assets/fonts/Jua-Regular.ttf"))
         for filename in ("malgun.ttf", "segoeui.ttf", "seguisym.ttf", "seguiemj.ttf", "consola.ttf"):
             path = Path("C:/Windows/Fonts") / filename

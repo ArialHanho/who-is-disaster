@@ -9,7 +9,7 @@ import time
 from .review_source import GitSource, normalize_source, valid_branch
 from .review_analysis import VERSION, analyze, fingerprint, finding_policy
 from .review_parallel import parse_targets, capture, compose, sources_metadata
-from .review_followup import verify, tracking, check_result, recover_integrated_views
+from .review_followup import verify, tracking, check_result, recover_integrated_views, SourceIndexes
 from .review_catalog import branches
 from . import github_account
 from .github_actions import collect as collect_actions, failed_runs
@@ -264,7 +264,8 @@ class ReviewService:
                         finding["fingerprint"] = conflicts[finding["key"]]
                 recover_integrated_views(snapshot, previous)
                 if progress: progress("thinking", "이전에 발견한 문제가 고쳐졌는지 비교하고 있어요")
-                checks, error = verify(snapshot, previous, result["findings"], ai_error=result.get("ai_error", ""), force=force)
+                checks, error = verify(snapshot, previous, result["findings"], ai_error=result.get("ai_error", ""), force=force,
+                                       progress=progress, cache_dir=None if force else self.root/'followup-cache')
                 result["followup"] = checks
                 result["followup_error"] = error
             if progress: progress("organizing", "근거와 수정 지시문을 정리하고 있어요")
@@ -276,6 +277,7 @@ class ReviewService:
 
     def record(self, repo, snapshot, signature, result):
         stamp = time.time()
+        indexes = SourceIndexes()
         error = result.get("ai_error") or result.get("followup_error", "")
         with self.db() as db:
             previous = {r["fingerprint"]: dict(r) for r in db.execute("SELECT * FROM findings WHERE repo_id=?", (repo["id"],))}
@@ -331,7 +333,7 @@ class ReviewService:
                     finding.pop("resolution", None)
                 if checked and not current and state == "open" and checked.get("evidence"):
                     finding.update(evidence=checked["evidence"], head=snapshot["head"], sources=checked["sources"], snapshot_id=snapshot.get("snapshot_id", ""))
-                finding["tracking"] = tracking(snapshot, finding) if current or state in {"open", "resolved"} else old.get("tracking", {})
+                finding["tracking"] = tracking(snapshot, finding, indexes) if current or state in {"open", "resolved"} else old.get("tracking", {})
                 events = list(old.get("events", []))
                 if not row or state != row["state"]:
                     events.append({"state": state, "stamp": stamp, "head": snapshot["head"], "reason": (checked or {}).get("reason", ""),

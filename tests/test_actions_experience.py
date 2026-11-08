@@ -187,6 +187,13 @@ class ResidentExperienceTests(unittest.TestCase):
                 self.app.processEvents()
                 self.assertTrue(panel.isVisible())
                 self.assertFalse(sprite.bubble.isVisible())
+                for _ in range(3):
+                    panel.hide()
+                    sprite.open_panel()
+                    sprite.restore()
+                    QTest.qWait(20)
+                    self.assertTrue(panel.isVisible())
+                    self.assertFalse(sprite.bubble.isVisible())
                 fid = service.findings(rid)[0]["id"]
                 panel.toggle_finding(fid)
                 self.app.processEvents()

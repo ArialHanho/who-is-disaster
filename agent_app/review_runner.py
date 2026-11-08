@@ -10,9 +10,13 @@ import time
 
 class ReviewCache:
     """Cache exact input only: changed code, refs, rules or model invalidate it."""
-    def __init__(self, folder, policy, *, ttl=7*24*3600):
+    def __init__(self, folder, policy, *, ttl=7*24*3600, fields=None):
         self.folder = Path(folder)
         self.policy, self.ttl = policy, ttl
+        self.fields = fields or {'summary':str, 'findings':list}
+
+    def valid(self, result):
+        return isinstance(result, dict) and all(isinstance(result.get(k), t) for k, t in self.fields.items())
 
     def key(self, context):
         # UI counters are not model evidence and change while a scan is running.
@@ -26,8 +30,7 @@ class ReviewCache:
             stored = json.loads((self.folder / (key+'.json')).read_text(encoding='utf-8'))
             result = stored['result']
             if (stored['key'] == key and 0 <= time.time()-stored['created'] < self.ttl
-                    and isinstance(result, dict) and isinstance(result.get('summary'), str)
-                    and isinstance(result.get('findings'), list)):
+                    and self.valid(result)):
                 return {'result':result, 'usage':{}, 'elapsed_ms':0}
         except (OSError, ValueError, KeyError, TypeError):
             pass
@@ -35,7 +38,7 @@ class ReviewCache:
 
     def put(self, context, response):
         result = response.get('result')
-        if not isinstance(result, dict) or not isinstance(result.get('summary'), str) or not isinstance(result.get('findings'), list):
+        if not self.valid(result):
             return
         key, temporary = self.key(context), None
         try:

@@ -28,6 +28,44 @@ def answer(state="resolved", quote="value = 2", **changes):
 
 
 class FollowupEvidenceTests(unittest.TestCase):
+    def test_timeout_does_not_drop_other_checks_and_completed_checks_are_reused(self):
+        from agent_app.codex_provider import ReviewTimeout
+        old = snapshot({'app.py':'value = 1\n'})
+        issues = [{**tracked(old), 'id':i} for i in range(6)]
+        current = snapshot({'app.py':'value = 2\n'}, head='b'*40)
+        calls = []
+        def generated(context, **kwargs):
+            ids = [i['id'] for i in context['issues']]
+            calls.append(ids)
+            if 0 in ids: raise ReviewTimeout('fixture timeout')
+            return {'result':{'checks':[answer('uncertain', id=i) for i in ids]}}
+        with tempfile.TemporaryDirectory() as cache:
+            checks, error = verify(current, issues, [], generate=generated, cache_dir=cache)
+            self.assertTrue(error)
+            self.assertTrue(all(checks[i]['method']=='codex' for i in range(1,6)))
+            self.assertEqual(checks[0]['state'], 'uncertain')
+            calls.clear()
+            verify(current, issues, [], generate=generated, cache_dir=cache)
+            self.assertTrue(calls)
+            self.assertTrue(all(0 in ids for ids in calls))
+
+    def test_many_findings_build_each_source_index_once_per_verification(self):
+        from agent_app import review_followup as followup
+        old = snapshot({'app.py':'value = 1\n'})
+        issues = [{**tracked(old), 'id':i} for i in range(24)]
+        current = snapshot({'app.py':'value = 2\n'}, head='b'*40)
+        def generated(context, **kwargs):
+            return {'result':{'checks':[answer('uncertain', id=i['id']) for i in context['issues']]}}
+        with patch.object(followup, 'dependencies', wraps=followup.dependencies) as graph, patch.object(followup, 'symbol_index', wraps=followup.symbol_index) as symbols:
+            checks, error = verify(current, issues, [], generate=generated)
+            self.assertEqual(len(checks), 24)
+            self.assertFalse(error)
+            self.assertEqual(graph.call_count, 1)
+            self.assertEqual(symbols.call_count, 1)
+            verify(current, issues, [], generate=generated)
+            self.assertEqual(graph.call_count, 2)
+            self.assertEqual(symbols.call_count, 2)
+
     def test_real_git_ancestry_maps_retired_branch_to_fixed_base(self):
         from tests.test_parallel_review import ParallelTests
         fixture = ParallelTests()
