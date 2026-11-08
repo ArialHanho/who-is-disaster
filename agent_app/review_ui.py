@@ -636,7 +636,7 @@ class ReviewPanel(RoundedSurface):
             self.settings_content()
         self.cards.addStretch()
         self.rendered_page = self.page
-        QTimer.singleShot(0, lambda: self.scroll.verticalScrollBar().setValue(position) if generation == self.render_generation else None)
+        QTimer.singleShot(0, self, lambda: self.scroll.verticalScrollBar().setValue(position) if generation == self.render_generation else None)
 
     def set_category(self, category):
         self.category = category
@@ -784,7 +784,7 @@ class ReviewPanel(RoundedSurface):
                     y = heading.mapTo(self.scroll.widget(), heading.rect().topLeft()).y()
                     self.scroll.verticalScrollBar().setValue(max(0, y-16))
                     break
-        QTimer.singleShot(0, reveal)
+        QTimer.singleShot(0, self, reveal)
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key.Key_Escape:

@@ -196,7 +196,9 @@ class ResidentExperienceTests(unittest.TestCase):
                 QTest.keyClick(panel, Qt.Key.Key_Escape)
                 self.assertFalse(panel.isVisible())
             finally:
+                panel.watcher.close(); panel.idle_chat.close()
                 sprite.timer.stop(); sprite.click_timer.stop(); sprite.skin.close()
+                self.app.processEvents()
                 for w in (sprite.restore_tab, sprite.bubble, sprite, panel): w.hide(); w.deleteLater()
                 self.app.processEvents()
 
