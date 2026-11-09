@@ -195,11 +195,12 @@ class ParallelTests(unittest.TestCase):
         with patch("agent_app.review_analysis.codex_provider.status", return_value={"ready": True, "label": "ChatGPT"}), patch("agent_app.review_analysis.codex_provider.generate", side_effect=generate):
             result = analyze(data)
         self.assertEqual(result["ai_error"], "")
-        self.assertEqual(len(contexts), 2)
+        self.assertEqual(len([c for c in contexts if 'review_pass' not in c]), 2)
         included = {f["view"] for context in contexts for f in context["files"]}
         self.assertTrue({f"branch:worker{i}" for i in range(11)} <= included)
-        self.assertEqual(result["coverage"]["completed_batches"], 2)
-        self.assertEqual(result["usage"]["input_tokens"], 20)
+        self.assertEqual(result["coverage"]["completed_batches"], len(contexts))
+        self.assertTrue(result['coverage']['full_source_review'])
+        self.assertEqual(result["usage"]["input_tokens"], 10*len(contexts))
 
 
 if __name__ == "__main__":

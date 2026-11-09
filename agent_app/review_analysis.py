@@ -15,7 +15,7 @@ from .review_batches import complete_contexts
 from .review_runner import ReviewCache, review_batches
 
 CATEGORIES = {"structure": "구조 문제", "placeholder_code": "더미 코드", "overengineering": "과한 설계", "circular_dependency": "순환 의존성", "missing_change": "변경 누락", "structural_conflict": "변경 충돌", "feature": "기능 추가"}
-VERSION = "code-review-12-parallel-source"
+VERSION = "code-review-13-stable-source"
 
 
 def fingerprint(finding):
@@ -254,7 +254,9 @@ def integration_review(snapshot):
     if not views:
         return result
     # Merged historical refs remain visible, but do not resurrect issues already removed from the base.
-    per_view = {key: static_review(view)["findings"] for key, view in views.items() if not view.get("merged")}
+    analyses = {key: static_review(view) for key, view in views.items() if not view.get("merged")}
+    result['view_graphs'] = {key: data['graph'] for key, data in analyses.items()}
+    per_view = {key: data['findings'] for key, data in analyses.items()}
     existing = {f["key"] for findings in per_view.values() for f in findings}
     for f in result["findings"]:
         for e in f["evidence"]:
@@ -340,7 +342,9 @@ def make_context(snapshot, static, rules):
     searches = [report]
     for key, view in views.items():
         focus = set(view['changed']) | (related & view['files'].keys())
-        entries, report = collect_context(view, focus or set(view['files']), dependencies(view['files'])[0], 22000 // len(views), key, source_excerpt)
+        graph = static.get('view_graphs', {}).get(key)
+        if graph is None: graph = dependencies(view['files'])[0]
+        entries, report = collect_context(view, focus or set(view['files']), graph, 22000 // len(views), key, source_excerpt)
         excerpts.extend(entries); searches.append(report)
     return {"repository": snapshot["name"], "commit": snapshot["head"], "base": snapshot["base"],
             "project_rules": rules, "initial_review": snapshot.get("initial_review", True),
@@ -486,7 +490,8 @@ def analyze(snapshot, rules="", *, progress=None, cache_dir=None, max_workers=4)
     active = [(k, v) for k, v in views.items() if k != "base" and (v["changed"] or v["deleted"] or v.get("independent"))]
     groups = [active[i:i+8] for i in range(0, len(active), 8)] or [[]]
     contexts = [make_context({**snapshot, "views": {**({"base": views["base"]} if "base" in views else {}), **dict(group)}}, static, rules) for group in groups]
-    contexts, source_coverage = complete_contexts(snapshot, contexts, static['graph'], rules, source_excerpt)
+    contexts, source_coverage = complete_contexts(snapshot, contexts, static['graph'], rules, source_excerpt,
+                                               view_graphs=static.get('view_graphs'))
     coverage = contexts[0]["coverage"]
     coverage['limited_views'] = [{'view': key, 'label': view.get('label', key), 'omitted_files': view.get('omitted', 0)}
                                  for key, view in views.items() if view.get('omitted', 0)]

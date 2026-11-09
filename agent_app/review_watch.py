@@ -1,5 +1,4 @@
 """Git metadata events locally; cheap remote revision probes before any code review."""
-import hashlib
 import json
 from pathlib import Path
 import time
@@ -9,13 +8,14 @@ from .review_catalog import branches
 from .review_source import git
 from .review_parallel import github_origin
 from . import github_account
+from .review_schedule import ReviewSchedule
+from .review_revision import revision_token
 
 
 def revision(repo):
     catalog = branches(repo['source'])
     base = repo['branch'] or catalog['default']
     selected = set(json.loads(repo['targets'])) | {base}
-    refs = sorted((b['name'], b['head']) for b in catalog['branches'] if repo['all_branches'] or b['name'] in selected)
     pulls = []
     if repo['open_prs']:
         pulls = sorted((p['number'], p['head'], p['base']) for p in github_account.open_pulls(repo['source']))
@@ -24,10 +24,10 @@ def revision(repo):
         if explicit:
             web = github_origin(repo['source'])
             if not web: raise ValueError('PR 변경 감지에는 GitHub origin이 필요해요.')
-            pulls = git('.', 'ls-remote', '--', web+'.git', *['refs/pull/'+t[3:]+'/head' for t in explicit]).decode().splitlines()
+            output = git('.', 'ls-remote', '--', web+'.git', *['refs/pull/'+t[3:]+'/head' for t in explicit]).decode().splitlines()
+            pulls = [(int(ref.split('/')[2]), head, '') for head, ref in (row.split() for row in output)]
     local_head = '' if repo['source'].startswith('https://') else git(repo['source'], 'rev-parse', 'HEAD').decode().strip()
-    options = [repo[k] for k in ('source', 'branch', 'all_branches', 'open_prs', 'targets', 'include_working', 'rules')]
-    return hashlib.sha256(json.dumps([options, base, local_head, refs, pulls], sort_keys=True).encode()).hexdigest()
+    return revision_token(repo, catalog, pulls, local_head)
 
 
 def git_watch_paths(source):
@@ -53,9 +53,12 @@ class ChangeWatcher(QObject):
         self.service = service
         self.closed = False
         self.path = service.root/'watch-state.json'
-        try: self.baselines = json.loads(self.path.read_text(encoding='utf-8'))
-        except (OSError, ValueError): self.baselines = {}
-        self.repos, self.configs, self.pending, self.next_probe, self.errors = {}, {}, {}, {}, {}
+        try: state = json.loads(self.path.read_text(encoding='utf-8'))
+        except (OSError, ValueError): state = {}
+        if state.get('version') != 2: state = {'baselines': state}
+        self.schedule = ReviewSchedule(state)
+        self.baselines, self.pending = self.schedule.baselines, self.schedule.pending
+        self.repos, self.configs, self.next_probe, self.errors = {}, {}, {}, {}
         self.dirty, self.workers = set(), {}
         self.fs = QFileSystemWatcher(self)
         self.fs.fileChanged.connect(self.local_event)
@@ -64,6 +67,10 @@ class ChangeWatcher(QObject):
         self.debounce.setSingleShot(True)
         self.debounce.setInterval(8000)
         self.debounce.timeout.connect(self.poll)
+        self.dispatch = QTimer(self)
+        self.dispatch.setInterval(5000)
+        self.dispatch.timeout.connect(self.flush)
+        self.dispatch.start()
         self.rebuild = False
 
     def local_event(self, *_):
@@ -74,7 +81,10 @@ class ChangeWatcher(QObject):
 
     def sync(self):
         self.repos = {r['id']:r for r in self.service.repos() if r['auto']}
-        self.pending = {rid:token for rid,token in self.pending.items() if rid in self.repos}
+        self.schedule.retain(self.repos)
+        for rid, repo in self.repos.items():
+            # Existing installations also honour the last completed review.
+            if repo.get('checked'): self.schedule.started.setdefault(str(rid), repo['checked'])
         # Review timestamps change frequently; only watch configuration belongs here.
         config = {rid:json.dumps([r[k] for k in ('source','branch','targets','all_branches','open_prs','include_working','rules')]) for rid,r in self.repos.items()}
         if config != self.configs:
@@ -96,7 +106,7 @@ class ChangeWatcher(QObject):
         self.sync()
         now = time.monotonic()
         for rid,repo in self.repos.items():
-            if rid in self.workers or rid in self.pending: continue
+            if rid in self.workers: continue
             remote = repo['source'].startswith('https://') or repo['open_prs'] or 'pr:' in repo['targets']
             if rid not in self.dirty and (not remote and rid not in self.errors or now < self.next_probe.get(rid, 0)): continue
             self.dirty.discard(rid)
@@ -105,33 +115,54 @@ class ChangeWatcher(QObject):
             self.workers[rid] = worker
             worker.signals.result.connect(lambda token, i=rid:self.detected(i, token))
             worker.signals.error.connect(lambda error, i=rid:self.problem(i, error))
-            worker.signals.finished.connect(lambda i=rid:self.workers.pop(i, None))
+            worker.signals.finished.connect(lambda i=rid:self.probed(i))
             QThreadPool.globalInstance().start(worker)
+        self.flush()
 
     def detected(self, rid, token):
         if self.closed or rid not in self.repos: return
         self.errors.pop(rid, None)
-        if self.baselines.get(str(rid)) != token:
-            self.pending[rid] = token
-            self.changed.emit(rid)
+        self.schedule.observe(rid, token)
+        self.flush()
+
+    def ready(self, rid):
+        return (rid in self.repos and rid not in self.workers
+                and rid not in self.errors and self.schedule.ready(rid))
+
+    def probed(self, rid):
+        self.workers.pop(rid, None)
+        self.flush()
+
+    def flush(self):
+        if self.closed: return
+        for rid in list(self.pending):
+            if self.ready(rid): self.changed.emit(rid)
+
+    def save(self):
+        try:
+            temp = self.path.with_suffix('.tmp')
+            temp.write_text(json.dumps(self.schedule.state()), encoding='utf-8')
+            temp.replace(self.path)
+        except OSError:
+            pass  # A checkpoint failure must not discard the review result.
+
+    def started(self, rid):
+        self.schedule.begin(rid)
+        self.save()
 
     def problem(self, rid, message):
         if self.errors.get(rid) != message: self.failed.emit(rid, message)
         self.errors[rid] = message
 
-    def completed(self, rid, success):
-        token = self.pending.pop(rid, None)
-        if token is None: return
-        if success:
-            self.baselines[str(rid)] = token
-            temp = self.path.with_suffix('.tmp')
-            temp.write_text(json.dumps(self.baselines), encoding='utf-8')
-            temp.replace(self.path)
-        else:
+    def completed(self, rid, success, token=None, *, reviewed=True):
+        self.schedule.complete(rid, success, token, reviewed=reviewed)
+        self.save()
+        if not success:
             self.errors[rid] = '분석을 마치지 못해 변경 확인을 다시 시도해요.'
 
     def close(self):
         self.closed = True
         self.debounce.stop()
+        self.dispatch.stop()
         paths = self.fs.files()+self.fs.directories()
         if paths: self.fs.removePaths(paths)

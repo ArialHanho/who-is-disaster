@@ -107,7 +107,8 @@ class RepoDialog(RoundedDialog):
         self.rules.setFixedHeight(144)
         self.rules.setAccessibleName('목표와 유지할 설계')
         layout.addWidget(self.rules)
-        self.auto = QCheckBox("커밋·푸시로 코드가 바뀌면 자동 점검")
+        self.auto = QCheckBox("커밋·푸시 변경을 모아서 자동 점검")
+        self.auto.setToolTip("마지막 변경 후 90초 · 자동 분석 최소 5분 간격\n계속 변경되면 최대 10분까지 모아요. 지금 분석은 바로 실행해요.")
         self.auto.setChecked(bool(repo["auto"]) if repo else True)
         layout.addWidget(self.auto)
         layout.addWidget(label("로컬 Git 변경은 바로 감지해요. GitHub 연결은 새 커밋·PR 여부만 가볍게 확인하고, 달라졌을 때 분석해요. 저장만 한 미커밋 변경은 ‘지금 분석’으로 확인할 수 있어요.", 12, MUTED))
@@ -1012,6 +1013,8 @@ class ReviewPanel(RoundedSurface):
         if repo_id in self.recheck_targets: options['recheck_ids'] = self.recheck_targets.pop(repo_id)
         if self.full_scope_scan: options["all_scope"] = True
         self.force_repos.discard(repo_id)
+        self.changed_repos.discard(repo_id)
+        self.watcher.started(repo_id)
         from .review_process import review
         worker = Worker(lambda:review(self.service, repo_id, progress=worker.signals.progress.emit, **options))
         self.workers.append(worker)
@@ -1033,7 +1036,8 @@ class ReviewPanel(RoundedSurface):
             self.sprite.bubble.show_message(text, mode="progress")
 
     def received(self, result):
-        self.watcher.completed(result['repo_id'], not bool(result.get('ai_error') or result.get('followup_error')))
+        self.watcher.completed(result['repo_id'], not bool(result.get('ai_error') or result.get('followup_error')),
+                               result.get('watch_token'), reviewed=not result.get('recheck_only'))
         if self.scan_audit is not None:
             self.scan_audit["results"].append({"repo_id": result["repo_id"], "selection": result.get("selection", {}),
                 "cached": bool(result.get("cached")),
@@ -1103,8 +1107,13 @@ class ReviewPanel(RoundedSurface):
     def drain_changes(self):
         if not self.busy and not self.queue and not QApplication.activeModalWidget() and self.changed_repos:
             enabled = {r['id'] for r in self.service.repos() if r['auto']}
-            self.queue = sorted(self.changed_repos & enabled)
-            self.changed_repos.clear()
+            self.changed_repos.intersection_update(enabled)
+            ready = sorted(rid for rid in self.changed_repos if self.watcher.ready(rid))
+            if not ready: return
+            # Recheck readiness after other repositories finish; newer pushes may
+            # have restarted their quiet period while this repository was busy.
+            self.queue = ready[:1]
+            self.changed_repos.discard(ready[0])
             self.full_scope_scan, self.scan_audit = False, None
             self.scan_next()
 

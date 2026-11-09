@@ -15,6 +15,11 @@ from tests.test_review import offline_actions
 
 
 class ChangeWatchTests(unittest.TestCase):
+    def setUp(self):
+        for name in ('QUIET_SECONDS', 'MIN_INTERVAL'):
+            mocked = patch('agent_app.review_schedule.'+name, 0)
+            mocked.start(); self.addCleanup(mocked.stop)
+
     def test_local_commit_triggers_review_but_unchanged_refs_do_not(self):
         app = QApplication.instance() or QApplication([])
         with tempfile.TemporaryDirectory() as temp:
@@ -74,14 +79,15 @@ class ChangeWatchTests(unittest.TestCase):
             watcher=ChangeWatcher(service)
             watcher.repos={rid:repo}
             queued=[];watcher.changed.connect(queued.append)
-            watcher.detected(rid,first);watcher.completed(rid,True)
+            watcher.detected(rid,first);watcher.started(rid);watcher.completed(rid,True)
             watcher.detected(rid,first)
             self.assertEqual(queued,[rid])
             watcher.detected(rid,second)
             self.assertEqual(queued,[rid,rid])
+            watcher.started(rid)
             watcher.completed(rid,False)
             self.assertEqual(watcher.baselines[str(rid)],first)
-            watcher.deleteLater();app.processEvents()
+            watcher.close();watcher.deleteLater();app.processEvents()
 
 
 if __name__=='__main__': unittest.main()

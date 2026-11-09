@@ -11,6 +11,7 @@ from .review_analysis import VERSION, analyze, fingerprint, finding_policy
 from .review_parallel import parse_targets, capture, compose, sources_metadata
 from .review_followup import verify, tracking, check_result, recover_integrated_views, SourceIndexes
 from .review_catalog import branches
+from .review_revision import captured_token
 from . import github_account
 from .github_actions import collect as collect_actions, failed_runs
 from .review_authors import AuthorLookup
@@ -199,6 +200,7 @@ class ReviewService:
             if repo["open_prs"]:
                 targets = [t for t in targets if not t.startswith("pr:")] + [f"pr:{p['number']}" for p in pulls]
             parallel = bool(targets or repo["include_working"])
+            captured = None
             if parallel:
                 captured = capture(self.source, repo["source"], repo["branch"], targets, bool(repo["include_working"]))
                 captured_heads = {v["id"]: v["head"] for v in captured["views"]}
@@ -212,10 +214,11 @@ class ReviewService:
             signature = hashlib.sha256(json.dumps([revision, pull_revisions, repo["rules"], os.getenv("CODEX_MODEL", ""), VERSION], sort_keys=True).encode()).hexdigest()
             selection = {"all_branches": bool(repo["all_branches"]), "open_prs": bool(repo["open_prs"]),
                          "branches": len(catalog.get("branches", [])), "pulls": len(pulls), "one_time_all": all_scope}
+            watch_token = captured_token(repo, catalog, snapshot, captured, pulls) if not all_scope and not recheck_only else None
             if signature == repo["signature"] and not force:
                 with self.db() as db:
                     db.execute("UPDATE repos SET checked=?,error='',alerted_error='' WHERE id=?", (time.time(), repo_id))
-                return {"repo_id": repo_id, "cached": True, "head": snapshot["head"], "selection": selection}
+                return {"repo_id": repo_id, "cached": True, "head": snapshot["head"], "selection": selection, "watch_token": watch_token}
             if progress: progress("searching", "변경 내용을 모아 함께 살펴보고 있어요")
             snapshot = compose(self.source, captured) if parallel else self.source.read(snapshot, repo["last_head"])
             snapshot["pull_requests"] = pulls
@@ -248,6 +251,7 @@ class ReviewService:
                       if recheck_only else self.analyzer(snapshot, rules, **({'progress':progress, 'cache_dir':None if force else self.root/'review-cache'} if self.analyzer is analyze else {})))
             result.update({"repo_id": repo_id, "head": snapshot["head"], "base": snapshot["base"], "web": snapshot["web"], "cached": False})
             result["selection"] = selection
+            result['watch_token'] = watch_token
             result["pull_requests"] = pulls
             if parallel:
                 result.update(sources=sources_metadata(snapshot), snapshot_id=snapshot["snapshot_id"],

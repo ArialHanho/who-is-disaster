@@ -5,10 +5,49 @@ from unittest.mock import patch
 from agent_app.review_source import GitSource
 from agent_app.review_analysis import analyze, make_context, static_review, source_excerpt
 from agent_app.review_batches import complete_contexts, missing_chunks
+from agent_app.review_runner import ReviewCache
 from tests.test_review import snapshot
 
 
 class CompleteSourceTests(unittest.TestCase):
+    def test_new_commit_reuses_unchanged_source_pages_but_runs_change_review(self):
+        data = snapshot({f'module{i:03}.py':f'value = {i}\n' for i in range(240)})
+        calls = []
+        def generate(context, **kwargs):
+            calls.append(context)
+            return {'result': {'summary':'검토 완료', 'findings':[]}, 'usage':{}}
+        with tempfile.TemporaryDirectory() as temp, patch('agent_app.review_analysis.codex_provider.status',
+                return_value={'ready':True, 'label':'ChatGPT'}), patch('agent_app.review_analysis.codex_provider.generate', side_effect=generate):
+            first = analyze(data, cache_dir=temp)
+            calls.clear()
+            data = {**data, 'head':'c'*40, 'base':data['head'], 'changed':['module050.py'],
+                    'diff':'value = 50 -> value = 99', 'files':{**data['files'], 'module050.py':'value = 99\n'}}
+            second = analyze(data, cache_dir=temp)
+        self.assertTrue(second['coverage']['full_source_review'])
+        self.assertEqual(second['coverage']['source_files'], 240)
+        self.assertEqual(len(calls), 2)  # Focused changes plus the affected full-source page.
+        self.assertEqual(second['coverage']['reused_batches'], first['coverage']['ai_batches']-2)
+        self.assertTrue(any(c.get('commit') == 'c'*40 for c in calls))
+
+    def test_source_cache_tracks_callers_outside_excerpt_and_project_contracts(self):
+        data = snapshot({'a.py':'from z import work\nwork()\n', 'z.py':'def work():\n    pass\n',
+                         'README.md':'Expected behaviour\n'})
+        def contexts(value):
+            graph = static_review(value)['graph']
+            # Force separate pages and an intentionally short support excerpt.
+            with patch('agent_app.review_batches.SOURCE_BATCH_FILES', 1):
+                return complete_contexts(value, [], graph, '',
+                    lambda p,b,n:{'code':'1: '+b.splitlines()[0], 'truncated':True})[0]
+        cache = ReviewCache('.', ['policy'])
+        before = contexts(data)
+        changed_head = contexts({**data, 'head':'c'*40, 'changed':[]})
+        self.assertEqual([cache.key(c) for c in before], [cache.key(c) for c in changed_head])
+        target = next(i for i,c in enumerate(before) if c['files'][0]['path'] == 'z.py')
+        for path, body in [('a.py','from z import work\nwork(1)\n'), ('README.md','Different contract\n')]:
+            after = contexts({**data, 'files':{**data['files'], path:body}})
+            if path == 'a.py': self.assertEqual(before[target]['files'], after[target]['files'])
+            self.assertNotEqual(cache.key(before[target]), cache.key(after[target]))
+
     def test_collection_keeps_files_past_old_count_and_size_caps(self):
         bodies = {f'{i:040x}':f'value = {i}\n'.encode() for i in range(610)}
         bodies['f'*40]=b'value = "'+b'x'*2_100_000+b'"\n'

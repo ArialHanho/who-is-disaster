@@ -19,7 +19,7 @@ python -m venv .venv
 Inno Setup 경로는 실제 설치 위치로 바꾸세요. 스크립트는 `agent_app.__version__`을 읽어 설치 파일 버전을 맞춥니다. PyInstaller는 Qt 관련 DLL만 정상 수집하도록 빌드 PATH를 제한합니다.
 
 - 실행 폴더: `dist/CodeCompanion`
-- 설치 파일: `dist/installer/WhoIsDisaster-Setup-0.3.2.exe`
+- 설치 파일: `dist/installer/WhoIsDisaster-Setup-0.3.3.exe`
 - 내부 실행 파일·AppId·데이터 경로는 이전 설치형과의 업그레이드 호환을 위해 유지합니다.
 
 ## 배포
@@ -31,9 +31,9 @@ Inno Setup 경로는 실제 설치 위치로 바꾸세요. 스크립트는 `agen
 5. 기존 설정·기록을 유지하는 업그레이드인지 확인합니다.
 
 ```powershell
-git tag -a v0.3.2 -m "Who is disaster 0.3.2"
+git tag -a v0.3.3 -m "Who is disaster 0.3.3"
 git push origin main --tags
-gh release create v0.3.2 dist/installer/WhoIsDisaster-Setup-0.3.2.exe --title "Who is disaster 0.3.2" --notes-file CHANGELOG.md
+gh release create v0.3.3 dist/installer/WhoIsDisaster-Setup-0.3.3.exe --title "Who is disaster 0.3.3" --notes-file CHANGELOG.md
 ```
 
 공개 소스에는 직접 작성한 코드·문서·검사와 재배포 가능한 자산만 포함합니다. 개인 데이터로 만든 스크린샷이나 캐릭터 팩을 릴리스에 첨부하지 마세요.
