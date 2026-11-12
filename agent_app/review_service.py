@@ -6,12 +6,12 @@ import os
 from pathlib import Path
 import sqlite3
 import time
-from .review_source import GitSource, normalize_source, valid_branch
-from .review_analysis import VERSION, analyze, fingerprint, finding_policy
+from .review_source import GitSource, github_origin, normalize_source, valid_branch
+from .review_analysis import VERSION, analyze, fingerprint, finding_policy, preserve_issue_identities
 from .review_parallel import parse_targets, capture, compose, sources_metadata
 from .review_followup import verify, tracking, check_result, recover_integrated_views, SourceIndexes
 from .review_catalog import branches
-from .review_revision import captured_token, excluded_branches, included_branches, included_pulls
+from .review_revision import captured_token, excluded_branches, included_branches, included_pulls, worktree_exclusions
 from . import github_account
 from .github_actions import collect as collect_actions, failed_runs
 from .review_authors import AuthorLookup
@@ -148,7 +148,8 @@ class ReviewService:
         if refresh:
             repo = self.repo(repo_id)
             data = branches(repo["source"])
-            data["pulls"] = github_account.open_pulls(repo["source"]) if (repo["open_prs"] if include_pulls is None else include_pulls) else []
+            load_pulls = repo["open_prs"] if include_pulls is None else include_pulls
+            data["pulls"] = github_account.open_pulls(github_origin(repo["source"])) if load_pulls else []
             with self.db() as db:
                 db.execute("INSERT INTO catalogs VALUES(?,?,?) ON CONFLICT(repo_id) DO UPDATE SET checked=excluded.checked,payload=excluded.payload",
                            (repo_id, time.time(), json.dumps(data, ensure_ascii=False)))
@@ -259,7 +260,7 @@ class ReviewService:
             parallel = bool(targets or repo["include_working"])
             captured = None
             if parallel:
-                options = {"excluded": excluded} if excluded and repo["include_working"] else {}
+                options = {"excluded": worktree_exclusions(repo, catalog)} if repo["include_working"] else {}
                 captured = capture(self.source, repo["source"], repo["branch"], targets, bool(repo["include_working"]), **options)
                 captured_heads = {v["id"]: v["head"] for v in captured["views"]}
                 if any(captured_heads.get(f"pr:{p['number']}") != p["head"] for p in pulls):
@@ -339,6 +340,7 @@ class ReviewService:
                 for finding in result["findings"]:
                     if finding.get("origin") == "git-merge-tree" and finding.get("key") in conflicts:
                         finding["fingerprint"] = conflicts[finding["key"]]
+                preserve_issue_identities(snapshot, previous, result["findings"])
                 if progress and result["findings"] and not recheck_only:
                     published = self.record(repo, snapshot, signature, result, discoveries_only=True, indexes=indexes)
                     progress("findings", "브리핑에서 발견한 문제를 볼 수 있어요")
@@ -361,6 +363,8 @@ class ReviewService:
         error = result.get("ai_error") or result.get("followup_error", "")
         with self.db() as db:
             previous = recorded_findings(db, repo["id"])
+            preserve_issue_identities(snapshot, ({**r["payload"], "fingerprint": key} for key, r in previous.items()),
+                                      result["findings"])
             detected = {f.get("fingerprint") or fingerprint(f): f for f in result["findings"]}
             checks = result.get("followup", {})
             counts = dict(published or {"open": 0, "resolved": 0, "uncertain": 0, "reopened": 0})

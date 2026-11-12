@@ -73,6 +73,17 @@ def normalize_source(value):
     return "https://github.com/" + "/".join(parts), "/".join(parts)
 
 
+def github_origin(source):
+    """Resolve a local repository or its configured GitHub URL to HTTPS."""
+    try:
+        url = source if source.startswith(("https://", "git@github.com:")) else git(source, "remote", "get-url", "origin").decode().strip()
+        if url.startswith("git@github.com:"):
+            url = "https://github.com/" + url.removeprefix("git@github.com:")
+        return normalize_source(url)[0] if url.startswith("https://github.com/") else ""
+    except ValueError:
+        return ""
+
+
 def valid_branch(value):
     value = value.strip()
     if value and (len(value) > 1024 or re.search(r"[\x00-\x20\x7f~^:?*\[\\]", value) or value == "@" or value.startswith(("-", "/")) or

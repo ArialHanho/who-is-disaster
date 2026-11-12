@@ -99,13 +99,15 @@ class AnimationSet:
         return None
 
     def prepare_poses(self):
-        sources = {}
+        sheets, sources = {}, {}
         for state, spec in self.animations.items():
             entry = spec["frames"][0]
             file, rect = (entry, None) if isinstance(entry, str) else (entry["file"], tuple(entry["rect"]))
             key = (file, rect)
             if key not in sources:
-                image = QPixmap(str(self.safe_path(file)))
+                if file not in sheets:
+                    sheets[file] = QPixmap(str(self.safe_path(file)))
+                image = sheets[file]
                 sources[key] = image.copy(*rect) if rect else image
             self.poses[state] = sources[key]
             self.pose_scales[state] = spec.get("display_scale", 1)
@@ -125,6 +127,8 @@ class AnimationSet:
         blend = blend*blend*(3-2*blend)
         def layer(key, opacity): return (self.poses[key], opacity, self.pose_scales[key])
         if self._pose_previous is None or blend >= 1:
+            if self.motion and state == "idle" and "blink" in self.poses and 3.8 <= age % 4.7 < 3.96:
+                return [layer("blink", 1)]
             return [layer(target, 1)]
         return [layer(self._pose_previous, 1-blend), layer(target, blend)]
 
@@ -153,8 +157,8 @@ def selected_skin(root, repaint, preferences):
             if key == "ember_fox" else pack_path(root, key))
     base = path.parent if path else root
     skin = AnimationSet(base, repaint, path, motion=not preferences["reduced_motion"])
-    if key == "ember_fox":
-        skin.continuous_motion = True
+    if key == "ember_fox" and skin.animations:
+        skin.pose_motion = skin.continuous_motion = True
     elif key != "legacy" and not path:
         skin.animations = {}
     if skin.pose_motion:

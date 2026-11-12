@@ -2,8 +2,7 @@
 import hashlib
 from pathlib import Path
 import re
-from .review_parallel import github_origin
-from .review_source import allowed_file, git, redact
+from .review_source import allowed_file, git, github_origin, redact
 
 
 def resolution_of(finding):

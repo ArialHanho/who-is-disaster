@@ -5,11 +5,11 @@ import time
 from PySide6.QtCore import QObject, QFileSystemWatcher, QThreadPool, QTimer, Signal
 from .background import Worker
 from .review_catalog import branches
-from .review_source import git
-from .review_parallel import github_origin, working_states
+from .review_source import git, github_origin
+from .review_parallel import working_states
 from . import github_account
 from .review_schedule import ReviewSchedule
-from .review_revision import excluded_branches, included_pulls, revision_token, working_revisions
+from .review_revision import included_pulls, revision_token, working_revisions, worktree_exclusions
 
 
 def revision(repo):
@@ -19,7 +19,7 @@ def revision(repo):
     pulls = []
     if repo['open_prs']:
         pulls = sorted((p['number'], p['head'], p['base'])
-                       for p in included_pulls(repo, github_account.open_pulls(repo['source']), catalog['default']))
+                       for p in included_pulls(repo, github_account.open_pulls(github_origin(repo['source'])), catalog['default']))
     else:
         explicit = sorted(t for t in selected if t.startswith('pr:'))
         if explicit:
@@ -28,8 +28,7 @@ def revision(repo):
             output = git('.', 'ls-remote', '--', web+'.git', *['refs/pull/'+t[3:]+'/head' for t in explicit]).decode().splitlines()
             pulls = [(int(ref.split('/')[2]), head, '') for head, ref in (row.split() for row in output)]
     local_head = '' if repo['source'].startswith('https://') else git(repo['source'], 'rev-parse', 'HEAD').decode().strip()
-    excluded = excluded_branches(repo) - {base}
-    working = working_revisions(working_states(repo['source'], excluded)) if repo['include_working'] else ()
+    working = working_revisions(working_states(repo['source'], worktree_exclusions(repo, catalog))) if repo['include_working'] else ()
     return revision_token(repo, catalog, pulls, local_head, working=working)
 
 

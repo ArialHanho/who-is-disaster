@@ -7,20 +7,12 @@ import subprocess
 import threading
 import time
 from . import github_account as gh, codex_provider
-from .review_source import git, redact
+from .review_source import github_origin, redact
 
 FAILED = {"failure", "timed_out", "action_required", "startup_failure"}
 TEST_NAME = re.compile(r"\b(tests?|pytest|unittest|vitest|jest|specs?|e2e)\b|테스트", re.I)
 STATE_LABELS = {"passed": "Actions 통과", "failed": "Actions 실패", "running": "Actions 실행 중",
                 "missing": "실행 결과 없음", "unavailable": "조회 미완료", "incomplete": "통과 미확인"}
-
-
-def repository_name(source):
-    if not source.startswith("https://"):
-        try: source = git(source, "remote", "get-url", "origin").decode().strip()
-        except ValueError: return ""
-    match = re.fullmatch(r"(?:https://github\.com/|git@github\.com:)([\w.-]+/[\w.-]+?)(?:\.git)?/?", source)
-    return match[1] if match else ""
 
 
 def pages(repo, suffix, field):
@@ -151,7 +143,8 @@ def test_summary(runs):
 
 
 def collect(source, targets, previous=None, *, force=False, progress=None, diagnose_failures=True):
-    report = {"checked": time.time(), "repository": repository_name(source), "targets": targets, "commits": {}, "error": ""}
+    name = github_origin(source).removeprefix("https://github.com/")
+    report = {"checked": time.time(), "repository": name, "targets": targets, "commits": {}, "error": ""}
     if not report["repository"]:
         report["error"] = "연결된 GitHub 원격 저장소가 없어 Actions를 확인할 수 없어요."
         return report

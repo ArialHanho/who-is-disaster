@@ -9,6 +9,7 @@ from unittest.mock import patch
 from agent_app.review_analysis import static_review, integration_review, make_context, validate_ai, fingerprint, repair_prompt, finding_policy, batch_repair_prompt
 from agent_app.review_service import ReviewService
 from agent_app.review_source import GitSource, normalize_source, redact
+from agent_app.review_followup import check_result
 
 
 def snapshot(files, changed=None, head="a"*40, initial=False):
@@ -114,7 +115,7 @@ class AnalysisTests(unittest.TestCase):
         checked = validate_ai({'summary': '', 'findings': [deepcopy(f)]}, data, context)[0][0]
         self.assertEqual(checked['confidence'], 'high')
         duplicate = {**finding(), 'origin': 'codex'}
-        duplicate['evidence'].append({**duplicate['evidence'][0], 'view': 'base'})
+        duplicate['evidence'].append({**duplicate['evidence'][0], 'view': 'base', 'quote': 'value'})
         self.assertEqual(finding_policy(duplicate)['confidence'], 'medium')
         duplicate['evidence'][1] = {'path': 'app.py', 'line': 2, 'quote': '# TODO simplify'}
         self.assertEqual(finding_policy(duplicate)['confidence'], 'medium')
@@ -125,7 +126,8 @@ class AnalysisTests(unittest.TestCase):
         shown = finding_policy(f)
         self.assertTrue(shown['integration_only'])
         self.assertIn('함께 병합하면', shown['title'])
-        self.assertTrue(repair_prompt({'source': 'example/app'}, shown).startswith('먼저 관련 브랜치들이 함께 반영할 변경인지'))
+        prompt = repair_prompt({'source': 'example/app'}, shown)
+        self.assertLess(prompt.index('먼저 관련 브랜치들이 함께 반영할 변경인지'), prompt.index('수정 지시:'))
 
     def test_ai_rejects_invented_evidence_and_initial_feature(self):
         data = snapshot({"app.py": "value = 1\n"}, initial=True)
@@ -144,7 +146,7 @@ class AnalysisTests(unittest.TestCase):
         f["head"] = "a"*40
         prompt = repair_prompt({"source": "https://github.com/example/app"}, f)
         self.assertIn("app.py:1", prompt)
-        self.assertIn("검토 커밋과 달라졌다면", prompt)
+        self.assertIn("현재 코드에서 재현되거나 원문 근거가 확인된 문제만", prompt)
         self.assertEqual(repair_prompt({"source": "x"}, finding("feature")), "")
 
     def test_bulk_prompt_groups_repos_and_excludes_handled_findings(self):
@@ -156,6 +158,7 @@ class AnalysisTests(unittest.TestCase):
         entries += [({**repo, 'id': 2, 'name': 'two/app'}, {**f, 'id': 5})]
         prompt = batch_repair_prompt(entries)
         self.assertEqual(prompt.count('### 항목 #1\n'), 1)
+        self.assertEqual(prompt.count("각 항목의 검토 커밋과 실제 사용처를 먼저 확인"), 1)
         self.assertIn('검토 후보', prompt)
         self.assertNotIn('### 항목 #3', prompt)
         self.assertNotIn('### 항목 #4', prompt)
@@ -204,6 +207,41 @@ class ServiceTests(unittest.TestCase):
         restarted.review(self.rid)
         self.assertEqual(restarted.pending_notice(self.rid)["findings"], [])
 
+    def test_moved_evidence_keeps_identity_but_a_second_call_gets_its_own_alert(self):
+        item = {**finding("missing_change"), "origin": "codex", "assessment": {"basis": "runtime"},
+                "evidence": [
+                    {"path": "app.py", "line": 1, "quote": "def send(token):", "role": "implementation"},
+                    {"path": "client.py", "line": 1, "quote": "send()", "role": "caller"},
+                ]}
+        self.output = [item]
+        self.data["files"] = {"app.py": "def send(token):\n    pass\n", "client.py": "send()\n"}
+        self.service.review(self.rid)
+        notice = self.service.pending_notice(self.rid)
+        issue = notice["findings"][0]
+        self.service.mark_notified(notice)
+
+        self.data.update(head="c" * 40, files={**self.data["files"], "client.py": "# Send the message\nsend()\n"})
+        moved = deepcopy(item)
+        moved["evidence"][1]["line"] = 2
+        self.output = [moved]
+        with patch("agent_app.codex_provider.generate") as generate:
+            self.service.review(self.rid, progress=lambda *_: None)
+            generate.assert_not_called()
+        saved, = self.service.findings(self.rid, True)
+        self.assertEqual(saved["id"], issue["id"])
+        self.assertEqual(saved["first_seen"], issue["first_seen"])
+        self.assertEqual(saved["evidence"][1]["line"], 2)
+        self.assertEqual(self.service.pending_notice(self.rid)["findings"], [])
+
+        self.data.update(head="d" * 40, files={**self.data["files"], "client.py": "send()\nsend()\n"})
+        self.output = [item, moved]
+        self.service.review(self.rid, progress=lambda *_: None)
+        new, = self.service.pending_notice(self.rid)["findings"]
+        self.assertEqual(new["evidence"][1]["line"], 1)
+        self.assertNotEqual(new["id"], issue["id"])
+        self.assertEqual({f["evidence"][1]["line"]: f["id"] for f in self.service.findings(self.rid)},
+                         {1: new["id"], 2: issue["id"]})
+
     def test_legacy_duplicate_keeps_the_saved_disposition(self):
         item = {**finding(), "origin": "codex", "head": self.data["head"], "web": self.data["web"]}
         with self.service.db() as db:
@@ -220,6 +258,21 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(saved["disposition"], "accepted")
         self.service.disposition(saved["id"], "open")
         self.assertEqual(len(self.service.findings(self.rid)), 1)
+
+    def test_original_citation_matches_after_recheck_saves_different_evidence(self):
+        item = {**finding("missing_change"), "origin": "codex"}
+        self.data["files"]["app.py"] = "value = 1\nprint(value)\n"
+        self.output = [item]
+        self.service.review(self.rid)
+        issue, = self.service.findings(self.rid, True)
+        changed = {"path": "app.py", "line": 2, "quote": "print(value)"}
+        checked = check_result(self.data, "open", "같은 문제를 확인했어요.", "codex", [changed])
+        self.service.record(self.service.repo(self.rid), self.data, "fixture",
+                            {"findings": [], "followup": {issue["id"]: checked}, "recheck_only": True})
+        self.data["head"] = "e" * 40
+        self.service.review(self.rid)
+        current, = self.service.findings(self.rid, True)
+        self.assertEqual(current["id"], issue["id"])
 
     def test_new_findings_are_committed_before_followup(self):
         self.service.review(self.rid)

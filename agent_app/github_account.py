@@ -143,12 +143,11 @@ def repositories():
     return {**user, "repositories": list({r["id"]: r for r in repos}.values())}
 
 
-def open_pulls(source):
-    from .review_parallel import github_origin
-    web = github_origin(source)
-    if not web:
+def open_pulls(web):
+    match = re.fullmatch(r"https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)", web)
+    if not match:
         raise ValueError("열린 PR 자동 확인에는 GitHub 저장소 연결이 필요해요.")
-    name = web.removeprefix("https://github.com/")
+    name = match[1]
     rows = api_pages(f"repos/{name}/pulls?state=open&per_page=100")
     return [{"number": r["number"], "title": r["title"], "head": r["head"]["sha"],
              "head_branch": r["head"].get("ref", ""),

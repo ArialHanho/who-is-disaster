@@ -8,9 +8,6 @@ from .actions import ACTION_NAMES
 
 BUILTINS = {
     "ember_fox": ("불여우 탐정", "#d97745"),
-    "fox": ("책 읽는 여우", "#e8865a"),
-    "cat": ("호기심 고양이", "#8c9fbd"),
-    "robot": ("작은 로봇", "#77a895"),
 }
 DEFAULTS = {"character": "ember_fox", "name": "코드 비서", "scale": 100, "reduced_motion": False}
 SCALES = (50, 65, 85, 100, 125, 150)

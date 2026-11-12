@@ -7,7 +7,7 @@ from .character_settings import BUILTINS
 from .sprite_raster import draw_sprite, nameplate_y
 
 
-def draw_character(p, config, frame, state, *, style="fox", custom=None, look=(0, 0), hover=0, pressed=False, motion=True, height=164, pose=None, layers=None, stage_width=142, title_override=None, show_nameplate=True):
+def draw_character(p, config, frame, state, *, style="ember_fox", custom=None, look=(0, 0), hover=0, pressed=False, motion=True, height=164, pose=None, layers=None, stage_width=142, title_override=None, show_nameplate=True):
     p.setRenderHint(QPainter.RenderHint.Antialiasing)
     accent = QColor(BUILTINS.get(style, ("", config["accent"]))[1])
     ink = QColor("#3b2219")
@@ -75,32 +75,21 @@ def draw_character(p, config, frame, state, *, style="fox", custom=None, look=(0
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(accent.darker(112))
         for x in (40, 80): p.drawEllipse(QRectF(x, 133, 23, 10))
-        if style == "cat":
-            p.setPen(QPen(accent.darker(105), 11, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-            p.drawArc(QRectF(103, 108, 27, 28), -80*16, 200*16)
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(accent)
         body = QPainterPath()
-        if style == "robot":
-            p.drawRoundedRect(QRectF(30, 60, 83, 79), 20, 20)
-            p.setPen(QPen(accent.darker(110), 4))
-            p.drawLine(QPointF(71, 60), QPointF(71, 47))
-            p.setPen(Qt.PenStyle.NoPen)
-            p.drawEllipse(QRectF(65, 39, 12, 12))
-        else:
-            body.moveTo(29, 85)
-            body.quadTo(24, 57, 35, 44 if style == "fox" else 49)
-            body.lineTo(49, 58)
-            body.quadTo(71, 48, 94, 58)
-            body.lineTo(108, 44 if style == "fox" else 49)
-            body.quadTo(120, 62, 112, 87)
-            body.quadTo(121, 135, 93, 139)
-            body.lineTo(49, 139)
-            body.quadTo(22, 134, 29, 85)
-            p.drawPath(body)
-        p.setBrush(QColor("#eef6ec" if style == "robot" else "#fff7df"))
-        if style == "robot": p.drawRoundedRect(QRectF(38, 70, 67, 38), 11, 11)
-        else: p.drawEllipse(QRectF(37, 66, 69, 54))
+        body.moveTo(29, 85)
+        body.quadTo(24, 57, 35, 44)
+        body.lineTo(49, 58)
+        body.quadTo(71, 48, 94, 58)
+        body.lineTo(108, 44)
+        body.quadTo(120, 62, 112, 87)
+        body.quadTo(121, 135, 93, 139)
+        body.lineTo(49, 139)
+        body.quadTo(22, 134, 29, 85)
+        p.drawPath(body)
+        p.setBrush(QColor("#fff7df"))
+        p.drawEllipse(QRectF(37, 66, 69, 54))
         for x in (49, 86):
             p.setBrush(ink)
             if state in {"sleep", "happy", "success"} or frame % 55 > 51:
@@ -114,10 +103,6 @@ def draw_character(p, config, frame, state, *, style="fox", custom=None, look=(0
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(QColor("#eeb6a0"))
         for x in (42, 89): p.drawEllipse(QRectF(x, 94, 13, 5))
-        if style == "cat":
-            p.setPen(QPen(accent.darker(135), 1.4))
-            for x, direction in ((39, -1), (104, 1)):
-                for y in (92, 98): p.drawLine(QPointF(x, y), QPointF(x+direction*13, y-2))
         p.setPen(QPen(ink, 1.5))
         p.drawArc(QRectF(65, 91, 13, 12), 0 if state == "error" else 180*16, 180*16)
         p.setPen(Qt.PenStyle.NoPen)
@@ -128,7 +113,7 @@ def draw_character(p, config, frame, state, *, style="fox", custom=None, look=(0
         if state in {"greeting", "dragging", "happy"}:
             p.setPen(QPen(accent.lighter(115), 9, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
             p.drawLine(QPointF(30,107), QPointF(18+(math.sin(frame)*5 if motion else 0), 86))
-    if layers:
+    if layers and not (style == "ember_fox" and state == "attention"):
         if state == "sleep":
             p.setPen(accent)
             p.drawText(QRectF(108,height*.56,29,28),Qt.AlignmentFlag.AlignCenter,"zZ")

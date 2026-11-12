@@ -58,7 +58,7 @@ class DesktopCharacter(QWidget):
         self.last_reaction_at, self.fast_dragged = 0, False
         self.skin = selected_skin(root, self.update, self.preferences)
         self.canvas_height, width, height = character_geometry(self.skin.layout, self.preferences["scale"], self.skin.pose_motion)
-        self.canvas_width = width if self.skin.pose_motion else 142
+        self.canvas_width = width if self.skin.layout == "portrait" else 142
         self.pose_demo = None
         self.motion, self.pose, self.drag_lean = PortraitMotion(), PortraitPose(), 0
         self.gesture_motion, self.gesture_pose = PhotoGestureMotion(), PortraitPose()
@@ -128,8 +128,8 @@ class DesktopCharacter(QWidget):
                 self.preserve_gesture_art = False
                 self.motion, self.pose = PortraitMotion(), PortraitPose()
         elif self.skin.continuous_motion:
-            expressive = self.skin.pose_motion or self.preferences["character"] == "ember_fox"
-            self.pose = self.motion.step(dt, state, pressed=self.pressed, look=self.look[0], drag=self.drag_lean, expressive=expressive)
+            self.pose = self.motion.step(dt, state, pressed=self.pressed, look=self.look[0], drag=self.drag_lean,
+                                         expressive=self.skin.pose_motion)
         if self.bubble.isVisible(): self.place_popup(self.bubble)
         self.update()
 
@@ -379,7 +379,7 @@ class DesktopCharacter(QWidget):
             if hasattr(surface, "tag"): surface.tag.setText(preferences["name"])
         if replace: self.skin = selected_skin(self.root, self.update, preferences)
         self.canvas_height, width, height = character_geometry(self.skin.layout, preferences["scale"], self.skin.pose_motion)
-        self.canvas_width = width if self.skin.pose_motion else 142
+        self.canvas_width = width if self.skin.layout == "portrait" else 142
         self.setFixedSize(width, height)
         self.move(anchor.x()-width+1, anchor.y()-height+1)
         if replace:
@@ -500,7 +500,8 @@ class DesktopCharacter(QWidget):
         menu.addAction("비서 열기", self.open_panel)
         if self.skin.pose_motion:
             poses = menu.addMenu("동작 미리보기")
-            for key, title in [("idle","서 있기"),("happy","만세 점프"),("greeting","손 흔들기"),("organizing","노트북 작업"),("thinking","생각하기"),("attention","깜짝 놀라기"),("sleep","잠자기")]:
+            for key, title in [("idle", "대기"), ("happy", "폴짝 뛰기"), ("searching", "찾기"),
+                               ("organizing", "작업"), ("thinking", "생각하기"), ("attention", "깜짝 놀라기"), ("sleep", "잠자기")]:
                 poses.addAction(title,lambda checked=False,k=key:self.play_pose(k))
         if hasattr(self.panel, "add_local_repo"):
             menu.addAction("로컬 폴더 연결", self.panel.add_local_repo)

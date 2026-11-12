@@ -72,6 +72,24 @@ class ContextualReviewTests(unittest.TestCase):
         self.assertEqual(self.checked(item)['confidence'], 'high')
         self.assertEqual(self.checked(claim('structure'))['category'], 'structure')
 
+    def test_comments_and_relabelled_implementation_do_not_raise_confidence(self):
+        data = deepcopy(self.data)
+        data['files']['store.py'] = 'def save(item):\n    # return True\n    return persist(item)\n'
+        item = claim('structure')
+        item['evidence'][1]['role'] = 'contract'
+        self.assertEqual(self.checked(item, data)['confidence'], 'medium')
+
+        item = claim('overengineering')
+        item['assessment']['basis'] = 'duplication'
+        item['evidence'].extend([
+            {**item['evidence'][0], 'quote': 'True', 'role': 'alternative'},
+            {'view': 'combined', 'path': 'README.md', 'line': 1, 'role': 'requirement',
+             'quote': self.data['files']['README.md'].strip()},
+        ])
+        checked = self.checked(item)
+        self.assertEqual(checked['confidence'], 'medium')
+        self.assertTrue(any('별도 구현' in reason for reason in checked['review_limits']))
+
     def test_context_includes_intent_aliased_call_dynamic_reference_and_existing_body(self):
         body = 'def load_total(client):\n    return client.query("orders").count()\n'
         files = {'service.py': '# header\n' * 900 + body,

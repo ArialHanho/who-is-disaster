@@ -1,6 +1,16 @@
 {
   "name": "불여우 탐정",
   "animations": {
-    "idle": { "frames": ["ember-fox.png"] }
+    "idle": { "frames": ["ember-fox.png"] },
+    "blink": { "frames": [{"file": "ember-fox-actions.png", "rect": [32, 0, 480, 480]}] },
+    "searching": { "frames": [{"file": "ember-fox-actions.png", "rect": [535, 0, 458, 458]}] },
+    "organizing": { "frames": [{"file": "ember-fox-actions.png", "rect": [1056, 0, 480, 480]}] },
+    "thinking": { "frames": [{"file": "ember-fox-actions.png", "rect": [14, 512, 498, 498]}] },
+    "attention": { "frames": [{"file": "ember-fox-actions.png", "rect": [512, 512, 512, 512]}] },
+    "error": { "frames": [{"file": "ember-fox-actions.png", "rect": [512, 512, 512, 512]}] },
+    "dragging": { "frames": [{"file": "ember-fox-actions.png", "rect": [512, 512, 512, 512]}] },
+    "happy": { "frames": [{"file": "ember-fox-actions.png", "rect": [512, 512, 512, 512]}] },
+    "success": { "frames": [{"file": "ember-fox-actions.png", "rect": [512, 512, 512, 512]}] },
+    "sleep": { "frames": [{"file": "ember-fox-actions.png", "rect": [1024, 512, 490, 490]}] }
   }
 }

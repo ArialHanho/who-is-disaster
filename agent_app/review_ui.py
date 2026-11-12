@@ -375,6 +375,7 @@ class ReviewPanel(RoundedSurface):
         self.repo_id, self.sprite, self.busy = None, None, False
         self.page, self.category = "brief", "all"
         self.finding_page = 0
+        self.selected_findings = set()
         self.lifecycle, self.recheck_id, self.force_repos = "active", None, set()
         self.recheck_targets = {}
         self.actions_pending = set()
@@ -582,19 +583,6 @@ class ReviewPanel(RoundedSurface):
                 active_count = sum(f['state'] == 'open' and f['confidence'] == 'high' for _, f in current)
                 candidate_count = len(current) - active_count
                 self.chips([("active", f"코드 문제 {active_count}"), ("review", f"검토 후보 {candidate_count}"), ("resolved", "해결 기록")], self.lifecycle, self.set_lifecycle)
-                bulk = QHBoxLayout()
-                copy_all = button(f'전체 수정 지시문 복사 {len(current)}', self.copy_all_instructions, role='chip')
-                copy_all.setToolTip('현재 선택한 저장소의 문제와 검토 후보를 함께 복사해요. 해결·오탐·설계 유지 항목은 제외해요.')
-                copy_all.setEnabled(bool(current))
-                bulk.addWidget(copy_all)
-                recheck_all = button('수정 여부 일괄 확인', self.recheck_all, role='chip')
-                recheck_all.setEnabled(bool(current) and not self.busy)
-                bulk.addWidget(recheck_all)
-                bulk_box = QWidget()
-                bulk_box.setLayout(bulk)
-                bulk.setContentsMargins(0, 0, 0, 0)
-                bulk_box.setVisible(self.lifecycle != 'resolved')
-                self.cards.addWidget(bulk_box)
                 self.chips([("all", "전체"), ("structure", "구조"), ("placeholder_code", "더미"), ("overengineering", "과한 설계"), ("circular_dependency", "순환"), ("missing_change", "변경 누락"), ("structural_conflict", "충돌")], self.category, self.set_category, "filter")
                 entries = self.brief_findings(selected, current)
                 for index, (_, finding) in enumerate(entries):
@@ -604,11 +592,38 @@ class ReviewPanel(RoundedSurface):
                 last_page = max(0, (len(entries) - 1) // FINDINGS_PER_PAGE)
                 self.finding_page = min(self.finding_page, last_page)
                 start = self.finding_page * FINDINGS_PER_PAGE
+                page_entries = entries[start:start + FINDINGS_PER_PAGE]
+                selection_changed = None
+                if self.lifecycle != 'resolved':
+                    self.selected_findings.intersection_update(finding["id"] for _, finding in entries)
+                if page_entries and self.lifecycle != 'resolved':
+                    def selection():
+                        return [(repo, finding) for repo, finding in entries if finding["id"] in self.selected_findings]
+
+                    bulk = QHBoxLayout()
+                    selection_count = label("", 12, MUTED)
+                    selection_count.setToolTip("체크한 문제는 페이지를 넘겨도 선택돼 있어요.")
+                    preview = button("지시문 보기", lambda: self.preview_instructions(selection()), role="chip")
+                    recheck = button("수정 확인", lambda: self.recheck_selection(selection()), role="chip")
+                    reset = button("선택 해제", self.clear_selection, role="icon")
+                    def selection_changed():
+                        total = len(self.selected_findings)
+                        selection_count.setText(f"선택 {total}건")
+                        preview.setEnabled(total > 0)
+                        recheck.setEnabled(total > 0 and not self.busy)
+                        reset.setEnabled(total > 0)
+
+                    selection_changed()
+                    bulk.addWidget(selection_count, 1)
+                    bulk.addWidget(preview)
+                    bulk.addWidget(recheck)
+                    bulk.addWidget(reset)
+                    self.cards.addLayout(bulk)
                 for repo in selected:
                     if repo["error"]:
                         self.card(repo["name"] + " · 확인이 필요해요", repo["error"], "분석 미완료")
-                for repo, finding in entries[start:start + FINDINGS_PER_PAGE]:
-                    self.finding_card(repo, finding)
+                for repo, finding in page_entries:
+                    self.finding_card(repo, finding, selection_changed)
                 if last_page:
                     navigation = QHBoxLayout()
                     prev = button("이전", lambda: self.move_findings(-1), role="chip")
@@ -717,12 +732,27 @@ class ReviewPanel(RoundedSurface):
         self.expanded.clear()
         self.refresh(reset_scroll=True)
 
-    def finding_card(self, repo, finding):
+    def finding_card(self, repo, finding, selection_changed=None):
         card, inner = frame(self.cards, finding["confidence"] == "high" and finding["state"] == "open")
         if finding["id"] in self.expanded: card.setObjectName("detail")
         row = QHBoxLayout()
         row.setSpacing(7)
         mark = label("·" if finding['disposition'] != 'open' else "✓" if finding["state"] == "resolved" else ("!" if finding["severity"] == "problem" else "·"), 14, MUTED if finding['disposition'] != 'open' else "#54846a" if finding["state"] == "resolved" else ACCENT, True)
+        if selection_changed:
+            finding_id = finding["id"]
+            pick = QCheckBox()
+            pick.setAccessibleName(f'{finding["title"]} · 수정 대상 선택')
+            pick.setToolTip("수정 대상 선택")
+            pick.setProperty("selectFinding", finding_id)
+            pick.setChecked(finding_id in self.selected_findings)
+            def toggle_pick(checked):
+                if checked:
+                    self.selected_findings.add(finding_id)
+                else:
+                    self.selected_findings.discard(finding_id)
+                selection_changed()
+            pick.toggled.connect(toggle_pick)
+            row.addWidget(pick, 0, Qt.AlignmentFlag.AlignTop)
         row.addWidget(mark, 0, Qt.AlignmentFlag.AlignTop)
         # A wrapping label keeps long Korean titles inside the popover.
         heading = label(finding["title"], 14, BROWN, True)
@@ -869,22 +899,40 @@ class ReviewPanel(RoundedSurface):
         self.recheck_targets = {repo['id']: [finding['id']]}
         self.scan_now(repo["id"], force=True)
 
-    def current_issue_entries(self):
-        return [(repo, finding) for repo in self.service.repos() if self.repo_id is None or repo['id'] == self.repo_id
-                for finding in self.service.findings(repo['id'], limit=None) if finding['category'] != 'feature']
+    def clear_selection(self):
+        self.selected_findings.clear()
+        self.refresh()
 
-    def copy_all_instructions(self):
-        entries = self.current_issue_entries()
+    def preview_instructions(self, entries):
         prompt = batch_repair_prompt(entries)
         if not prompt:
-            self.status.setText('복사할 미해결 항목이 없어요.'); return
-        QApplication.clipboard().setText(prompt)
-        self.status.setText(f'전체 {len(entries)}개 수정 지시문을 복사했어요.')
+            return
+        dialog = RoundedDialog(self)
+        dialog.setWindowTitle("수정 지시문")
+        dialog.setWindowFlags(Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
+        size_popup(dialog)
+        dialog.move(self.pos())
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(18, 16, 18, 16)
+        layout.addWidget(label(f"선택 {len(entries)}건의 수정 지시문", 15, BROWN, True))
+        editor = QPlainTextEdit(prompt)
+        editor.setReadOnly(True)
+        editor.setAccessibleName("복사할 수정 지시문")
+        layout.addWidget(editor, 1)
+        footer = QHBoxLayout()
+        footer.addStretch()
+        footer.addWidget(button("닫기", dialog.reject, role="icon"))
+        footer.addWidget(button("복사", dialog.accept, True))
+        layout.addLayout(footer)
+        if dialog.exec():
+            QApplication.clipboard().setText(prompt)
+            self.status.setText(f"선택 {len(entries)}건의 수정 지시문을 복사했어요.")
+        dialog.deleteLater()
 
-    def recheck_all(self):
+    def recheck_selection(self, entries):
         if self.busy or QApplication.activeModalWidget(): return
         self.recheck_targets = {}
-        for repo, finding in self.current_issue_entries():
+        for repo, finding in entries:
             self.recheck_targets.setdefault(repo['id'], []).append(finding['id'])
         if not self.recheck_targets: return
         self.recheck_id = None

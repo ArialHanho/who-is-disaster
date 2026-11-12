@@ -19,6 +19,12 @@ def included_branches(repo, catalog):
             b['name'] not in excluded and (repo['all_branches'] or b['name'] in selected)]
 
 
+def worktree_exclusions(repo, catalog):
+    selected = {branch['name'] for branch in included_branches(repo, catalog)}
+    unselected = {branch['name'] for branch in catalog['branches']} - selected
+    return unselected | (excluded_branches(repo) - {repo['branch'] or catalog['default']})
+
+
 def included_pulls(repo, pulls, default=""):
     base = repo['branch'] or default
     excluded = excluded_branches(repo)

@@ -8,8 +8,7 @@ import time
 from urllib.request import Request, urlopen
 from urllib.parse import urlparse
 from . import github_account
-from .review_parallel import github_origin
-from .review_source import allowed_file, git, redact
+from .review_source import allowed_file, git, github_origin, redact
 
 
 class AuthorLookup:

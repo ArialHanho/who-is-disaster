@@ -33,9 +33,8 @@ class CharacterPreview(QWidget):
         if not self.isVisible(): return
         self.frame += dt*10
         if self.skin.continuous_motion:
-            expressive = self.skin.pose_motion or self.preferences["character"] == "ember_fox"
             self.pose = (self.gesture_motion.step(dt, held=True, moving=True, reduced=self.preferences['reduced_motion'])
-                         if self.state == 'dragging' else self.motion.step(dt, self.state, expressive=expressive))
+                         if self.state == 'dragging' else self.motion.step(dt, self.state, expressive=self.skin.pose_motion))
         self.update()
 
     def change(self, preferences):
@@ -62,7 +61,7 @@ class CharacterPreview(QWidget):
     def paintEvent(self, event):
         p = QPainter(self)
         height, width, _ = character_geometry(self.skin.layout, self.preferences["scale"], self.skin.pose_motion)
-        width = width if self.skin.pose_motion else 142
+        width = width if self.skin.layout == "portrait" else 142
         scale = min(self.width()/width, self.height()/height, 1 if self.skin.layout == "portrait" else self.preferences["scale"]/100)
         p.translate((self.width()-width*scale)/2, (self.height()-height*scale)/2)
         p.scale(scale, scale)

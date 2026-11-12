@@ -83,6 +83,27 @@ class ChangeWatchTests(unittest.TestCase):
             self.assertEqual(service.review(rid)["watch_token"], after)
             self.assertEqual(revision(service.repo(rid)), after)
 
+    def test_unselected_local_worktree_is_outside_watch_and_review(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            repo = root / "repo"
+            repo.mkdir()
+            git(repo, "init", "-b", "main", isolated=True)
+            (repo / "app.py").write_text("value = 1\n")
+            git(repo, "add", "app.py", isolated=True)
+            git(repo, "commit", "-m", "fixture", isolated=True)
+            draft = root / "draft"
+            git(repo, "worktree", "add", "-b", "draft", str(draft), isolated=True)
+            service = ReviewService(root / "db", lambda *_: {"findings": [], "ai_error": ""}, offline_actions)
+            rid = service.save_repo(str(repo), auto=True, include_working=True, all_branches=False)
+            before = revision(service.repo(rid))
+            (draft / "app.py").write_text("value = 2\n")
+            self.assertEqual(revision(service.repo(rid)), before)
+            result = service.review(rid)
+            self.assertEqual(result["watch_token"], before)
+            self.assertEqual(sum(v["kind"] == "worktree" for v in result["sources"].values()), 1)
+            self.assertTrue(all(not v["label"].startswith("draft") for v in result["sources"].values()))
+
     def test_remote_probe_uses_refs_and_pr_heads_and_remembers_success(self):
         app = QApplication.instance() or QApplication([])
         with tempfile.TemporaryDirectory() as temp:

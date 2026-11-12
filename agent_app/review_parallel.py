@@ -4,18 +4,7 @@ import json
 from pathlib import Path
 import re
 import tempfile
-from .review_source import git, valid_branch, normalize_source, allowed_file
-
-def github_origin(source):
-    if source.startswith("https://"):
-        return source
-    try:
-        url = git(source, "remote", "get-url", "origin").decode().strip()
-        if url.startswith("git@github.com:"):
-            url = "https://github.com/" + url[len("git@github.com:"):]
-        return normalize_source(url)[0] if url.startswith("https://github.com/") else ""
-    except ValueError:
-        return ""
+from .review_source import git, valid_branch, github_origin, allowed_file
 
 
 def parse_targets(value, source):
