@@ -10,5 +10,19 @@ The original project software and documentation are licensed under the
 PolyForm Noncommercial License 1.0.0 in LICENSE. Commercial use requires
 separate prior written permission from the rights holder, ArialHanho.
 
-Third-party components retain their own terms. See PROVENANCE.md,
-licenses/POPME-MIT.txt, and assets/fonts/Jua-OFL.txt.
+Third-party components retain their own terms.
+
+- Bluewak/POPME (https://github.com/Bluewak/popme) provided the design
+  reference for the character, speech bubble, briefing, and typography.
+  The MIT notice is preserved in licenses/POPME-MIT.txt.
+- Jua-Regular.ttf by the Jua Project Authors is licensed under the SIL
+  Open Font License 1.1 in assets/fonts/Jua-OFL.txt.
+- PySide6 and packaging dependencies retain their respective licenses.
+  Installer copies of third-party notices are under _internal.
+- The bundled fire fox, its sprites, and the README cover were generated
+  for this project. Imported character packs retain their own terms.
+
+Code review criteria reference Ponytail Audit
+(https://github.com/DietrichGebert/ponytail/tree/main/skills/ponytail-audit).
+Follow-up review references the Elephant–Goldfish Model
+(https://github.com/google/elephant-goldfish-model).

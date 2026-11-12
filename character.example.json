@@ -1,14 +1,8 @@
 {
+  "name": "내 비서",
   "animations": {
-    "idle": {"file": "assets/character/idle.gif"},
-    "searching": {"file": "assets/character/searching.gif"},
-    "thinking": {"file": "assets/character/thinking.gif"},
-    "organizing": {"file": "assets/character/organizing.gif"},
-    "success": {"file": "assets/character/success.gif"},
-    "error": {"file": "assets/character/error.gif"},
-    "attention": {"file": "assets/character/attention.gif"},
-    "sleep": {"file": "assets/character/sleep.gif"},
-    "greeting": {"file": "assets/character/greeting.gif"},
-    "dragging": {"file": "assets/character/dragging.gif"}
+    "idle": {"file": "idle.webp"},
+    "thinking": {"file": "thinking.webp"},
+    "attention": {"file": "attention.webp"}
   }
 }
