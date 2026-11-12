@@ -1,4 +1,4 @@
-![Who is disaster. 불여우 탐정이 코드 속 악마와 폭탄을 찾아내는 그림](assets/cover.png)
+![Who is disaster. 불여우 탐정이 Git 브랜치에서 버그를 찾는 그림](assets/cover.jpg)
 
 **여러 AI와 사람이 같은 저장소에서 작업할 때, 합치기 전에 사고를 찾아주는 Windows 비서입니다.**
 
