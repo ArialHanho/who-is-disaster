@@ -14,7 +14,7 @@ from agent_app import github_account as gh
 from agent_app.review_service import ReviewService
 from tests.test_review import offline_actions
 from agent_app.review_source import git
-from agent_app.review_ui import ReviewPanel, RepoDialog
+from agent_app.review_ui import BranchDialog, ReviewPanel, RepoDialog
 from agent_app.github_ui import GitHubDialog
 from agent_app.review_theme import label
 
@@ -100,9 +100,41 @@ class GitHubScopeTests(unittest.TestCase):
                     with self.assertRaises(ValueError): service.review(ids[0])
                 self.assertTrue(service.repo(ids[0])["error"])
                 self.assertEqual(len(service.catalog(ids[0])["pulls"]), 2)
+                pulls[:] = [{**pr(1), "head_branch": "agent", "same_repository": True},
+                            {**pr(2), "head_branch": "agent", "same_repository": False}]
+                service.set_scope(ids[0], True, [], excluded=["agent"])
+                service.review(ids[0], all_scope=True)
+                self.assertEqual(set(targets[-1]), {"new-agent", "pr:2"})
 
 
 class GitHubPickerTests(unittest.TestCase):
+    def test_branch_exclusion_preserves_follow_new_branches_and_reopens_checked(self):
+        app = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as temp, patch.object(BranchDialog, "load"):
+            service = ReviewService(Path(temp) / "db")
+            rid = service.save_repo("example/app", all_branches=True)
+            panel = ReviewPanel(Path(temp), service)
+            panel.timer.stop()
+            inventory = {"default": "main", "branches": [
+                {"name": name, "head": "a" * 40, "subject": ""} for name in ("main", "archive", "feature")]}
+            dialog = BranchDialog(panel, rid)
+            try:
+                dialog.received(inventory)
+                dialog.list.item(1).setCheckState(Qt.CheckState.Unchecked)
+                self.assertTrue(dialog.all.isChecked())
+                dialog.save()
+                reopened = BranchDialog(panel, rid)
+                inventory["branches"].append({"name": "new", "head": "b" * 40, "subject": ""})
+                reopened.received(inventory)
+                self.assertEqual(reopened.list.item(1).checkState(), Qt.CheckState.Unchecked)
+                self.assertEqual(reopened.list.item(3).checkState(), Qt.CheckState.Checked)
+                reopened.deleteLater()
+            finally:
+                dialog.deleteLater()
+                panel.watcher.close()
+                panel.deleteLater()
+                app.processEvents()
+
     def test_selection_survives_filters_and_split_device_code_opens_browser_once(self):
         app = QApplication.instance() or QApplication([])
         with tempfile.TemporaryDirectory() as temp, patch.object(GitHubDialog, "load"):

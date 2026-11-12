@@ -50,6 +50,20 @@ class ContextualReviewTests(unittest.TestCase):
         item = claim(); item['evidence'][1]['line'] = 1
         self.assertEqual(self.checked(item, data)['confidence'], 'medium')
 
+    def test_call_must_resolve_to_the_reported_implementation(self):
+        data = deepcopy(self.data)
+        data["files"]["metrics.py"] = "def save(item):\n    send_metric(item)\n"
+        data["files"]["app.py"] = "from metrics import save\nsave(item)\n"
+        self.assertEqual(self.checked(claim(), data)["confidence"], "medium")
+        data["files"]["app.py"] = "from store import save as persist\npersist(item)\n"
+        item = claim()
+        item["evidence"][1]["quote"] = "persist(item)"
+        confirmed = self.checked(deepcopy(item), data)
+        self.assertEqual(confirmed["confidence"], "high")
+        item["key"], item["title"] = "different-model-key", "같은 근거의 다른 제목"
+        item["evidence"].reverse()
+        self.assertEqual(self.checked(item, data)["fingerprint"], confirmed["fingerprint"])
+
     def test_design_needs_intent_and_counterpart_while_structure_is_first_class(self):
         item = claim('overengineering')
         self.assertEqual(self.checked(deepcopy(item))['confidence'], 'medium')

@@ -204,6 +204,40 @@ class ServiceTests(unittest.TestCase):
         restarted.review(self.rid)
         self.assertEqual(restarted.pending_notice(self.rid)["findings"], [])
 
+    def test_legacy_duplicate_keeps_the_saved_disposition(self):
+        item = {**finding(), "origin": "codex", "head": self.data["head"], "web": self.data["web"]}
+        with self.service.db() as db:
+            db.executemany("INSERT INTO findings(repo_id,fingerprint,payload,disposition,first_seen,last_seen) VALUES(?,?,?,?,?,?)",
+                           [(self.rid, "legacy-a", json.dumps(item), "accepted", 1, 1),
+                            (self.rid, "legacy-b", json.dumps(item), "open", 2, 2)])
+        saved = self.service.findings(self.rid, True)
+        self.assertEqual(len(saved), 1)
+        self.assertEqual(saved[0]["disposition"], "accepted")
+        self.output = [{**item, "key": "new-model-wording"}]
+        self.service.review(self.rid)
+        self.assertEqual(self.service.findings(self.rid), [])
+        saved = self.service.findings(self.rid, True)[0]
+        self.assertEqual(saved["disposition"], "accepted")
+        self.service.disposition(saved["id"], "open")
+        self.assertEqual(len(self.service.findings(self.rid)), 1)
+
+    def test_new_findings_are_committed_before_followup(self):
+        self.service.review(self.rid)
+        self.data["head"] = "c" * 40
+        self.output = [{**finding("missing_change"), "key": "new-issue"}]
+        stages = []
+        def verify(*args, **kwargs):
+            self.assertIn("findings", stages)
+            visible = {f["key"] for f in self.service.findings(self.rid)}
+            self.assertEqual(visible, {"unused-wrapper:app", "new-issue"})
+            self.assertEqual(len(self.service.runs(self.rid)), 1)
+            return {}, ""
+        with patch("agent_app.review_service.verify", side_effect=verify):
+            self.service.review(self.rid, progress=lambda stage, text: stages.append(stage))
+        self.assertEqual(len(self.service.runs(self.rid)), 2)
+        new = next(f for f in self.service.findings(self.rid) if f["key"] == "new-issue")
+        self.assertEqual(new["first_seen"], new["last_seen"])
+
     def test_persisted_weak_ai_finding_is_candidate_without_new_ai_call(self):
         self.output = [{**finding(), 'origin': 'codex'}]
         self.service.review(self.rid)

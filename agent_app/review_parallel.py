@@ -73,20 +73,26 @@ def _worktrees(folder):
 def _capture_working(folder):
     """Capture final saved contents once; staged state is also part of the cache key."""
     head = git(folder, "rev-parse", "HEAD").decode().strip()
+    filters = git(folder, "config", "--name-only", "--null", "--get-regexp",
+                  r"^filter\..*\.(clean|smudge|process|required)$", allowed_codes=(0, 1)).decode().split("\0")
+    options = []
+    for key in sorted(set(filters) - {""}):
+        options.extend(("-c", key + ("=false" if key.endswith(".required") else "=")))
+
     def state():
-        return git(folder, "status", "--porcelain=v1", "-z", "--untracked-files=all")
+        return git(folder, *options, "status", "--porcelain=v1", "-z", "--untracked-files=all")
     before = state()
     index = git(folder, "ls-files", "--stage", "-z")
     if any(b" 1\t" in p or b" 2\t" in p or b" 3\t" in p for p in index.split(b"\0")):
         raise ValueError(f"{folder.name}: 진행 중인 Git 충돌을 먼저 해결해 주세요. 미해결 index를 정상 코드로 합치지 않아요.")
-    names = git(folder, "diff", "--no-ext-diff", "--no-textconv", "--name-only", "-z", "HEAD", "--")
+    names = git(folder, *options, "diff", "--no-ext-diff", "--no-textconv", "--name-only", "-z", "HEAD", "--")
     names += git(folder, "ls-files", "--others", "--exclude-standard", "-z")
     autocrlf = git(folder, "config", "--get", "core.autocrlf", allowed_codes=(0, 1)).strip().lower() in {b"true", b"input"}
     attrs = git(folder, "check-attr", "-z", "--stdin", "text", "eol", input_data=names).split(b"\0") if names else []
     attributes = {}
     for i in range(0, len(attrs) - 2, 3):
         attributes.setdefault(attrs[i], {})[attrs[i+1]] = attrs[i+2]
-    files, omitted, total, stamps = {}, 0, 0, {}
+    files, omitted, stamps = {}, 0, {}
     for raw in sorted(set(names.split(b"\0")) - {b""}):
         name = raw.decode("utf-8", "replace")
         if not allowed_file(name):
@@ -108,7 +114,6 @@ def _capture_working(folder):
         attr = attributes.get(raw, {})
         normalize = attr.get(b"text") != b"unset" and (autocrlf or attr.get(b"text") in {b"set", b"auto"} or attr.get(b"eol") in {b"lf", b"crlf"})
         files[name] = body.replace(b"\r\n", b"\n") if normalize else body
-        total += len(body)
     if before != state() or head != git(folder, "rev-parse", "HEAD").decode().strip() or any(
             not (folder / n).exists() or ((folder / n).stat().st_mtime_ns, (folder / n).stat().st_size) != stamp
             for n, stamp in stamps.items()):
@@ -119,7 +124,16 @@ def _capture_working(folder):
     return {"head": head, "dirty_files": files, "dirty_signature": digest.hexdigest(), "omitted": omitted}
 
 
-def capture(reader, source, branch, targets, working):
+def working_states(source, excluded=()):
+    for folder, name in _worktrees(source):
+        if name in excluded:
+            continue
+        yield {**_capture_working(folder), "folder": str(folder),
+               "id": "worktree:" + hashlib.sha256(str(folder).encode()).hexdigest()[:12],
+               "label": name + " · " + folder.name + " (작업 폴더)", "kind": "worktree"}
+
+
+def capture(reader, source, branch, targets, working, *, excluded=()):
     """Resolve every selected ref before deciding whether an AI call is needed."""
     base = reader.prepare(source, branch)
     web = github_origin(source)
@@ -149,10 +163,7 @@ def capture(reader, source, branch, targets, working):
     if working:
         if source.startswith("https://"):
             raise ValueError("미커밋 변경은 로컬 Git 폴더를 연결한 뒤 포함할 수 있어요.")
-        for folder, name in _worktrees(source):
-            data = _capture_working(folder)
-            views.append({**data, "folder": str(folder), "id": "worktree:" + hashlib.sha256(str(folder).encode()).hexdigest()[:12],
-                          "label": name + " · " + folder.name + " (작업 폴더)", "kind": "worktree", "web": web})
+        views.extend({**state, "web": web} for state in working_states(source, excluded))
     key = [[v["id"], v["head"], v.get("dirty_signature", "")] for v in [base] + views]
     signature = hashlib.sha256(json.dumps(key, ensure_ascii=False).encode()).hexdigest()
     return {"base": base, "views": views, "signature": signature}

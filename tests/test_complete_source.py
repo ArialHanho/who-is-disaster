@@ -10,6 +10,40 @@ from tests.test_review import snapshot
 
 
 class CompleteSourceTests(unittest.TestCase):
+    def test_saved_source_review_revalidates_evidence_and_runs_live_focused_pass(self):
+        data = snapshot({"app.py": "value = 1\n"})
+        saved = {"coverage": {"source_files": 1, "source_versions": 1, "source_chunks": 1, "source_pass_batches": 1},
+                 "findings": []}
+        response = {"result": {"summary": "", "findings": []}, "usage": {}}
+        with patch("agent_app.review_analysis.codex_provider.status", return_value={"ready": True, "label": "ChatGPT"}), \
+                patch("agent_app.review_analysis.codex_provider.generate", return_value=response) as generate:
+            result = analyze(data, saved_source_review=saved)
+        self.assertTrue(result["coverage"]["full_source_review"])
+        self.assertTrue(result["coverage"]["saved_source_review"])
+        self.assertEqual(result["coverage"]["reused_batches"], 1)
+        self.assertNotIn("review_pass", generate.call_args.args[0])
+        generate.assert_called_once()
+
+    def test_doc_edit_reuses_every_unrelated_code_page(self):
+        files = {f"src/module{i:03}.py": f"value = {i}\n" for i in range(210)}
+        files["docs/notes.md"] = "Original notes\n"
+        data = snapshot(files)
+        calls = []
+        def generate(context, **kwargs):
+            calls.append(context)
+            return {"result": {"summary": "", "findings": []}, "usage": {}}
+        with tempfile.TemporaryDirectory() as temp, patch("agent_app.review_analysis.codex_provider.status",
+                return_value={"ready": True, "label": "ChatGPT"}), patch("agent_app.review_analysis.codex_provider.generate", side_effect=generate):
+            first = analyze(data, cache_dir=temp)
+            calls.clear()
+            changed = snapshot({**files, "docs/notes.md": "Expanded notes\n" * 1500}, changed=["docs/notes.md"], head="c" * 40)
+            second = analyze(changed, cache_dir=temp)
+        self.assertTrue(second["coverage"]["full_source_review"])
+        self.assertEqual(second["coverage"]["reused_batches"], first["coverage"]["ai_batches"] - 2)
+        self.assertEqual(len(calls), 2)
+        pages = [c for c in calls if "review_pass" in c]
+        self.assertEqual([f["path"] for c in pages for f in c["files"]], ["docs/notes.md"])
+
     def test_new_commit_reuses_unchanged_source_pages_but_runs_change_review(self):
         data = snapshot({f'module{i:03}.py':f'value = {i}\n' for i in range(240)})
         calls = []

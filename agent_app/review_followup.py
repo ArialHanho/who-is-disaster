@@ -16,6 +16,7 @@ class SourceIndexes:
     """One immutable snapshot per verification, never cached across source changes."""
     def __init__(self):
         self.graphs, self.symbols, self.digests = {}, {}, {}
+        self.importers, self.file_digests = {}, {}
 
     def graph(self, view):
         files = view['files']
@@ -35,13 +36,35 @@ class SourceIndexes:
             self.digests[id(files)] = hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest()
         return self.digests[id(files)]
 
+    def related_digest(self, view, evidence_paths):
+        files = view['files']
+        key = id(files)
+        graph = self.graph(view)[0]
+        if key not in self.importers:
+            reverse = {}
+            for path, targets in graph.items():
+                for target in targets:
+                    reverse.setdefault(target, set()).add(path)
+            self.importers[key] = reverse
+        paths = set(evidence_paths)
+        for path in evidence_paths:
+            paths.update(graph.get(path, ()))
+            paths.update(self.importers[key].get(path, ()))
+        digests = self.file_digests.setdefault(key, {})
+        related = []
+        for path in sorted(paths & files.keys()):
+            if path not in digests:
+                digests[path] = hashlib.sha256(files[path].encode()).hexdigest()
+            related.append((path, digests[path], sorted(graph.get(path, ()))))
+        return hashlib.sha256(json.dumps(related).encode()).hexdigest()
+
 
 def recover_integrated_views(snapshot, previous):
     """A retired ref can be compared to base only with Git ancestry evidence."""
     base = snapshot.get("views", {}).get("base", snapshot)
     if not base.get("folder"):
         return
-    aliases = {}
+    aliases, checked = {}, set()
     for finding in previous:
         if finding["category"] == "feature" or finding["disposition"] != "open":
             continue
@@ -53,6 +76,9 @@ def recover_integrated_views(snapshot, previous):
             eligible = source.get("kind") in {"branch", "pr"} or (source.get("kind") == "base" and source.get("previous_head"))
             if not eligible or not re.fullmatch(r"[a-f0-9]{40,64}", head):
                 continue
+            if (key, head) in checked:
+                continue
+            checked.add((key, head))
             try:
                 code, _ = git(base["folder"], "merge-base", "--is-ancestor", head, base["head"], allowed_codes=(0, 1), with_code=True)
                 if code == 0:
@@ -79,14 +105,24 @@ def comparison_sources(snapshot):
     return sources
 
 
-def tracking(snapshot, finding, indexes=None):
+def tracking(snapshot, finding, indexes=None, *, legacy=False):
     indexes = indexes or SourceIndexes()
     views = views_of(snapshot)
     keys = {e.get("view", "combined") for e in finding["evidence"]}
     scope = sorted(snapshot.get("views", {})) if "combined" in keys or finding.get("origin") == "git-merge-tree" else sorted(keys)
-    digests = {key: indexes.digest(views[key])
+    if legacy:
+        return {"scope": scope, "digests": {key: indexes.digest(views[key]) for key in keys if key in views}}
+    digests = {key: indexes.related_digest(views[key], {e["path"] for e in finding["evidence"] if e.get("view", "combined") == key})
                for key in keys if key in views}
-    return {"scope": scope, "digests": digests}
+    return {"scope": scope, "digests": digests, "related": True}
+
+
+def same_tracking(snapshot, finding, indexes):
+    checked_snapshot = finding.get("verification", {}).get("snapshot_id")
+    if checked_snapshot and checked_snapshot == snapshot.get("snapshot_id"):
+        return True
+    previous = finding.get("tracking", {})
+    return previous == tracking(snapshot, finding, indexes, legacy=not previous.get("related"))
 
 
 def check_result(snapshot, state, reason, method, evidence=()):
@@ -250,10 +286,10 @@ def validate_check(item, context, snapshot):
             'resolution_scope': item.get('resolution_scope', 'repository')}
 
 
-def verify(snapshot, previous, current, *, ai_error="", generate=None, force=False, progress=None, cache_dir=None):
+def verify(snapshot, previous, current, *, ai_error="", generate=None, force=False, progress=None, cache_dir=None, indexes=None):
     """Batch changed issues within a source budget; unchanged snapshots consume no AI."""
     checks, pending, error = {}, [], ""
-    indexes = SourceIndexes()
+    indexes = indexes or SourceIndexes()
     detected = {f.get("fingerprint") or fingerprint(f) for f in current}
     for finding in previous:
         if finding["category"] == "feature" or finding["disposition"] != "open":
@@ -270,9 +306,10 @@ def verify(snapshot, previous, current, *, ai_error="", generate=None, force=Fal
         if direct:
             checks[fid] = direct
             continue
-        same = finding.get("tracking") == tracking(snapshot, finding, indexes)
-        if same and not force and finding["state"] in {"open", "resolved"}:
-            state = finding["state"] if finding["state"] in {"open", "resolved", "uncertain"} else "uncertain"
+        same = same_tracking(snapshot, finding, indexes)
+        state = finding["state"]
+        verified = state in {"open", "resolved"} or state == "uncertain" and finding.get("verification", {}).get("method") == "codex"
+        if same and not force and verified:
             checks[fid] = {**finding.get("verification", {}), **check_result(snapshot, state,
                 "관련 코드가 이전 확인과 같아 기존 판단을 유지했어요.", "unchanged", finding.get("verification", {}).get("evidence", []))}
             continue
@@ -319,7 +356,7 @@ def verify(snapshot, previous, current, *, ai_error="", generate=None, force=Fal
             for finding, context in group:
                 matching = [item for item in items if isinstance(item, dict) and type(item.get("id")) is int and item["id"] == finding["id"]] if isinstance(items, list) else []
                 checked = validate_check(matching[0], context, snapshot) if len(matching) == 1 else None
-                if checked and checked["state"] == "resolved" and finding["state"] != "resolved" and finding.get("tracking") == tracking(snapshot, finding, indexes):
+                if checked and checked["state"] == "resolved" and finding["state"] != "resolved" and same_tracking(snapshot, finding, indexes):
                     checked = check_result(snapshot, "uncertain", "관련 코드가 바뀌지 않았어요. 수정 완료보다 이전 경고가 타당했는지 확인이 필요해요.", "unchanged-source")
                 checks[finding["id"]] = checked or check_result(snapshot, "uncertain", "재확인 응답의 현재 코드 근거가 부족해 해결을 확정하지 않았어요.", "invalid-evidence")
             completed += len(group)

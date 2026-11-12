@@ -11,14 +11,22 @@ import warnings
 from . import codex_provider
 from .review_source import requirements_file
 from .review_context import collect_context, excerpt
+from .review_evidence import ReviewEvidence
 from .review_batches import complete_contexts
 from .review_runner import ReviewCache, review_batches
 
 CATEGORIES = {"structure": "구조 문제", "placeholder_code": "더미 코드", "overengineering": "과한 설계", "circular_dependency": "순환 의존성", "missing_change": "변경 누락", "structural_conflict": "변경 충돌", "feature": "기능 추가"}
-VERSION = "code-review-13-stable-source"
+VERSION = "code-review-14-affected-source"
 
 
 def fingerprint(finding):
+    if finding.get("origin") == "codex" and finding["category"] != "feature":
+        relevant = {"implementation", "caller", "contract", "alternative"}
+        evidence = [e for e in finding["evidence"] if e.get("role") in relevant] or finding["evidence"]
+        anchors = sorted({(e.get("view", "combined"), e["path"], e.get("role", ""), e["line"], e["quote"].strip())
+                          for e in evidence})
+        identity = [finding["category"], finding.get("assessment", {}).get("basis", ""), anchors]
+        return hashlib.sha256(json.dumps(identity, ensure_ascii=False).encode()).hexdigest()[:24]
     anchor = finding.get("key") or finding["title"]
     paths = sorted({e["path"] for e in finding["evidence"]})
     return hashlib.sha256(json.dumps([finding["category"], anchor, paths], ensure_ascii=False).encode()).hexdigest()[:24]
@@ -48,6 +56,11 @@ def finding_policy(finding):
     if len(anchors) < 2:
         if result.get('confidence') == 'high': result['confidence'] = 'medium'
         result['review_reason'] = '문제 코드와 사용처·비교 대상의 근거가 충분하지 않아요. 실제 영향부터 확인해 주세요.'
+    if result.get('review_contract') == 'ponytail-v1' and result.get('state') != 'resolved' and any(
+            e.get('role') == 'caller' for e in result.get('evidence', [])):
+        if result.get('confidence') == 'high':
+            result['confidence'] = 'medium'
+        result['review_reason'] = '현재 코드에서 실제 호출 경로를 다시 확인해 주세요.'
     if result.get('review_limits'):
         if result.get('confidence') == 'high': result['confidence'] = 'medium'
         result['review_reason'] = ' '.join(result['review_limits'][:2])
@@ -400,12 +413,13 @@ high는 문제 구현과 실제 호출·비교 대상 등 서로 다른 코드 �
 각 문제의 instruction에는 수정 대상·이유·최소 변경 방향·유지할 동작·관련 확인을 포함한다. 실제 수정 완료라고 쓰지 않는다. 지나친 테스트·새 프레임워크·무관한 리팩토링을 요구하지 않는다. summary는 200자 이내."""
 
 
-def validate_ai(reply, snapshot, context):
+def validate_ai(reply, snapshot, context, *, source_evidence=None):
     if not isinstance(reply, dict) or not isinstance(reply.get("findings"), list) or not isinstance(reply.get("summary"), str):
         raise ValueError("코드 분석 응답 형식을 읽지 못했어요.")
     findings, rejected = [], 0
     allowed = {(f.get("view", "combined"), f["path"]): f for f in context["files"]}
     views = {"combined": snapshot, **snapshot.get("views", {})}
+    source_evidence = source_evidence or ReviewEvidence(views)
     for item in reply["findings"][:16]:
         if not isinstance(item, dict) or item.get("category") not in {"structure", "placeholder_code", "overengineering", "missing_change", "structural_conflict", "feature"}:
             rejected += 1
@@ -442,14 +456,15 @@ def validate_ai(reply, snapshot, context):
             continue
         item = {k: (v[:5000] if isinstance(v, str) else v) for k, v in item.items()}
         if item['category'] != 'feature':
-            item['review_limits'] = contextual_limits(item, context, views)
-            item['review_contract'] = 'ponytail-v1'
-        item["origin"], item["fingerprint"] = "codex", fingerprint(item)
+            item['review_limits'] = contextual_limits(item, context, source_evidence)
+            item['review_contract'] = 'source-evidence-v2'
+        item["origin"] = "codex"
+        item["fingerprint"] = fingerprint(item)
         findings.append(finding_policy(item))
     return findings, rejected
 
 
-def contextual_limits(item, context, views):
+def contextual_limits(item, context, source_evidence):
     limits, assessment = [], item.get('assessment')
     if not isinstance(assessment, dict) or any(not isinstance(assessment.get(k), str) or not assessment[k].strip()
                                              for k in ASSESSMENT_SCHEMA['required']):
@@ -468,40 +483,73 @@ def contextual_limits(item, context, views):
                       not re.search(r'(^|/)(tests?|fixtures?|mocks?)(/|_)|(^|/)test_|[._](test|spec)\.', e['path'], re.I)]
     if item['category'] == 'placeholder_code' and not runtime_callers:
         limits.append('더미 구현이 실제로 호출되는 경로를 확인해야 해요.')
-    for e in item['evidence']:
-        if e.get('role') != 'caller' or not e['path'].endswith('.py'): continue
-        body = views[e.get('view', 'combined')]['files'][e['path']]
-        try:
-            with warnings.catch_warnings():
-                warnings.simplefilter('ignore', SyntaxWarning)
-                actual_call = any(isinstance(n, ast.Call) and n.lineno <= e['line'] <= (n.end_lineno or n.lineno) for n in ast.walk(ast.parse(body)))
-        except (SyntaxError, ValueError, RecursionError):
-            actual_call = False
-        if not actual_call:
-            limits.append('호출 근거가 실제 Python 호출문인지 확인해야 해요.'); break
+    if item['category'] == 'missing_change' and not roles.intersection({'caller', 'contract'}):
+        limits.append('변경된 계약이나 영향을 받는 사용처의 근거가 필요해요.')
+    if 'caller' in roles:
+        implementations = [e for e in item['evidence'] if e.get('role') == 'implementation']
+        invocation = item['category'] == 'placeholder_code'
+        if not any(source_evidence.related_call(implementations, e, invocation=invocation) for e in runtime_callers):
+            limits.append('문제 구현과 실제 호출·사용 경로의 연결을 확인해야 해요.')
+    if item['category'] == 'overengineering' and assessment['basis'] == 'duplication' and 'alternative' not in roles:
+        limits.append('같은 일을 하는 기존 구현의 근거가 필요해요.')
     if item['category'] == 'overengineering' and not context.get('project_rules', '').strip() and 'requirement' not in roles:
         limits.append('현재 요구사항과 유지할 설계의 근거가 부족해요.')
     return list(dict.fromkeys(limits))
 
 
-def analyze(snapshot, rules="", *, progress=None, cache_dir=None, max_workers=4):
+def revalidate_saved_findings(saved, snapshot, rules, source_evidence):
+    """Recheck saved evidence against a source snapshot whose hashes matched."""
+    lines = {}
+    views = source_evidence.views
+    for finding in saved["findings"]:
+        if finding.get("origin") != "codex":
+            continue
+        excerpts = {}
+        for evidence in finding["evidence"]:
+            view, path = evidence.get("view", "combined"), evidence["path"]
+            key = view, path
+            if key not in lines:
+                lines[key] = views.get(view, {}).get("files", {}).get(path, "").splitlines()
+            n = evidence["line"]
+            if 1 <= n <= len(lines[key]):
+                excerpts.setdefault(key, set()).add(f"{n}: {lines[key][n - 1]}")
+        context = {"project_rules": rules, "files": [
+            {"view": view, "path": path, "code": "\n".join(sorted(code))}
+            for (view, path), code in excerpts.items()]}
+        checked, _ = validate_ai({"summary": "", "findings": [finding]}, snapshot, context,
+                                 source_evidence=source_evidence)
+        yield from checked
+
+
+def analyze(snapshot, rules="", *, progress=None, cache_dir=None, max_workers=4, saved_source_review=None):
     static = integration_review(snapshot)
     views = snapshot.get("views", {})
     active = [(k, v) for k, v in views.items() if k != "base" and (v["changed"] or v["deleted"] or v.get("independent"))]
     groups = [active[i:i+8] for i in range(0, len(active), 8)] or [[]]
     contexts = [make_context({**snapshot, "views": {**({"base": views["base"]} if "base" in views else {}), **dict(group)}}, static, rules) for group in groups]
-    contexts, source_coverage = complete_contexts(snapshot, contexts, static['graph'], rules, source_excerpt,
-                                               view_graphs=static.get('view_graphs'))
+    reused_source = 0
+    if saved_source_review:
+        saved_coverage = saved_source_review["coverage"]
+        source_coverage = {key: saved_coverage[key] for key in ("source_files", "source_versions", "source_chunks", "source_pass_batches")}
+        reused_source = source_coverage["source_pass_batches"]
+    else:
+        contexts, source_coverage = complete_contexts(snapshot, contexts, static['graph'], rules, source_excerpt,
+                                                   view_graphs=static.get('view_graphs'))
     coverage = contexts[0]["coverage"]
     coverage['limited_views'] = [{'view': key, 'label': view.get('label', key), 'omitted_files': view.get('omitted', 0)}
                                  for key, view in views.items() if view.get('omitted', 0)]
     coverage['omitted_files'] = max(coverage['omitted_files'], sum(v['omitted_files'] for v in coverage['limited_views']))
-    coverage.update(views=len(views), ai_batches=len(contexts), completed_batches=0, reused_batches=0,
+    total_batches = len(contexts) + reused_source
+    coverage.update(views=len(views), ai_batches=total_batches, completed_batches=reused_source, reused_batches=reused_source,
                     ai_excerpt_files=sum(c["coverage"]["ai_excerpt_files"] for c in contexts))
     coverage.update(source_coverage, full_source_review=False)
     result = {"findings": static["findings"], "summary": "", "ai_error": "", "usage": {},
               "coverage": coverage, "scope": snapshot["scope"], "head": snapshot["head"]}
     batch_findings = {}
+    source_evidence = ReviewEvidence({"combined": snapshot, **views})
+    if saved_source_review:
+        coverage["saved_source_review"] = True
+        batch_findings[len(contexts)] = list(revalidate_saved_findings(saved_source_review, snapshot, rules, source_evidence))
     try:
         ready = codex_provider.status()
         if not ready["ready"] or "ChatGPT" not in ready["label"]:
@@ -510,10 +558,10 @@ def analyze(snapshot, rules="", *, progress=None, cache_dir=None, max_workers=4)
         policy = [VERSION, os.getenv('CODEX_MODEL', ''), INSTRUCTIONS, REVIEW_SCHEMA]
         cache = ReviewCache(cache_dir, policy) if cache_dir is not None else None
         for index, context in enumerate(contexts, 1):
-            context['batch'] = {'index':index, 'total':len(contexts), 'all_view_count':len(views)}
+            context['batch'] = {'index':index, 'total':total_batches, 'all_view_count':len(views)}
         def report():
             if progress:
-                percent = coverage['completed_batches'] * 100 // len(contexts)
+                percent = coverage['completed_batches'] * 100 // total_batches
                 progress('thinking', f"분석 중 · {percent}%")
         report()
         def generate(context):
@@ -523,7 +571,7 @@ def analyze(snapshot, rules="", *, progress=None, cache_dir=None, max_workers=4)
                 result['ai_error'] = result['ai_error'] or error
                 continue
             context = contexts[index]
-            findings, rejected = validate_ai(response["result"], snapshot, context)
+            findings, rejected = validate_ai(response["result"], snapshot, context, source_evidence=source_evidence)
             batch_findings[index] = findings
             summaries[index] = response["result"]["summary"][:500]
             if rejected:
@@ -535,11 +583,11 @@ def analyze(snapshot, rules="", *, progress=None, cache_dir=None, max_workers=4)
             coverage['reused_batches'] += int(reused)
             report()
         result["summary"] = "\n".join(summaries[i] for i in sorted(summaries))
-        coverage['full_source_review'] = not result['ai_error'] and coverage['completed_batches'] == len(contexts) and not coverage['omitted_files']
+        coverage['full_source_review'] = not result['ai_error'] and coverage['completed_batches'] == total_batches and not coverage['omitted_files']
     except (ValueError, OSError) as exc:
         result["ai_error"] = str(exc)
     if result['ai_error']:
-        result["summary"] = f"정적 분석 완료 · AI 검토 {coverage['completed_batches']}/{len(contexts)}묶음 완료. 나머지 검토는 아직 완료되지 않았어요."
+        result["summary"] = f"정적 분석 완료 · AI 검토 {coverage['completed_batches']}/{total_batches}묶음 완료. 나머지 검토는 아직 완료되지 않았어요."
     # Keep focused review precedence independent of network completion order.
     seen = {f['fingerprint'] for f in result['findings']}
     for index in sorted(batch_findings):

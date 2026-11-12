@@ -6,10 +6,10 @@ from PySide6.QtCore import QObject, QFileSystemWatcher, QThreadPool, QTimer, Sig
 from .background import Worker
 from .review_catalog import branches
 from .review_source import git
-from .review_parallel import github_origin
+from .review_parallel import github_origin, working_states
 from . import github_account
 from .review_schedule import ReviewSchedule
-from .review_revision import revision_token
+from .review_revision import excluded_branches, included_pulls, revision_token, working_revisions
 
 
 def revision(repo):
@@ -18,7 +18,8 @@ def revision(repo):
     selected = set(json.loads(repo['targets'])) | {base}
     pulls = []
     if repo['open_prs']:
-        pulls = sorted((p['number'], p['head'], p['base']) for p in github_account.open_pulls(repo['source']))
+        pulls = sorted((p['number'], p['head'], p['base'])
+                       for p in included_pulls(repo, github_account.open_pulls(repo['source'])))
     else:
         explicit = sorted(t for t in selected if t.startswith('pr:'))
         if explicit:
@@ -27,7 +28,9 @@ def revision(repo):
             output = git('.', 'ls-remote', '--', web+'.git', *['refs/pull/'+t[3:]+'/head' for t in explicit]).decode().splitlines()
             pulls = [(int(ref.split('/')[2]), head, '') for head, ref in (row.split() for row in output)]
     local_head = '' if repo['source'].startswith('https://') else git(repo['source'], 'rev-parse', 'HEAD').decode().strip()
-    return revision_token(repo, catalog, pulls, local_head)
+    excluded = excluded_branches(repo) - {base}
+    working = working_revisions(working_states(repo['source'], excluded)) if repo['include_working'] else ()
+    return revision_token(repo, catalog, pulls, local_head, working=working)
 
 
 def git_watch_paths(source):
@@ -86,7 +89,7 @@ class ChangeWatcher(QObject):
             # Existing installations also honour the last completed review.
             if repo.get('checked'): self.schedule.started.setdefault(str(rid), repo['checked'])
         # Review timestamps change frequently; only watch configuration belongs here.
-        config = {rid:json.dumps([r[k] for k in ('source','branch','targets','all_branches','open_prs','include_working','rules')]) for rid,r in self.repos.items()}
+        config = {rid:json.dumps([r[k] for k in ('source','branch','targets','excluded_branches','all_branches','open_prs','include_working','rules')]) for rid,r in self.repos.items()}
         if config != self.configs:
             self.dirty.update(rid for rid in config if self.configs.get(rid)!=config[rid])
             self.configs, self.rebuild = config, True
@@ -107,8 +110,8 @@ class ChangeWatcher(QObject):
         now = time.monotonic()
         for rid,repo in self.repos.items():
             if rid in self.workers: continue
-            remote = repo['source'].startswith('https://') or repo['open_prs'] or 'pr:' in repo['targets']
-            if rid not in self.dirty and (not remote and rid not in self.errors or now < self.next_probe.get(rid, 0)): continue
+            periodic = repo['source'].startswith('https://') or repo['open_prs'] or 'pr:' in repo['targets'] or repo['include_working']
+            if rid not in self.dirty and (not periodic and rid not in self.errors or now < self.next_probe.get(rid, 0)): continue
             self.dirty.discard(rid)
             self.next_probe[rid] = now+60
             worker = Worker(lambda r=repo:revision(r))

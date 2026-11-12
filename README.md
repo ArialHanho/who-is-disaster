@@ -1,6 +1,6 @@
 # Who is disaster
 
-**바탕화면에서 함께 일하는 코드 검토 비서 · v0.3.3**
+**바탕화면에서 함께 일하는 코드 검토 비서 · v0.3.4**
 
 GitHub 저장소와 로컬 작업 폴더를 연결하면 브랜치·열린 PR·저장된 미커밋 변경을 함께 살펴봅니다. 오버엔지니어링, 순환 의존성, 변경 누락, 동시 작업의 충돌을 코드 근거와 함께 보여주고, 사용 중인 AI에 전달할 수정 지시문을 만듭니다.
 
@@ -20,7 +20,7 @@ GitHub 저장소와 로컬 작업 폴더를 연결하면 브랜치·열린 PR·�
 
 ### Windows 설치형
 
-[Releases](https://github.com/ArialHanho/who-is-disaster/releases)에서 `WhoIsDisaster-Setup-0.3.3.exe`를 받아 설치합니다. 시작 메뉴의 **Who is disaster**를 실행하면 캐릭터만 나타납니다.
+[Releases](https://github.com/ArialHanho/who-is-disaster/releases)에서 `WhoIsDisaster-Setup-0.3.4.exe`를 받아 설치합니다. 시작 메뉴의 **Who is disaster**를 실행하면 캐릭터만 나타납니다.
 
 코드 분석에는 **Git 2.38 이상**, **Codex CLI**와 해당 PC의 로그인이 필요합니다.
 

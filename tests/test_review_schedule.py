@@ -88,3 +88,13 @@ class ScheduleTests(unittest.TestCase):
         self.assertEqual(token, revision_token(repo, latest, [(1,'pr','main')]))
         latest['branches'][0]['head'] = 'newer'
         self.assertNotEqual(token, revision_token(repo, latest, [(1,'pr','main')]))
+
+    def test_excluded_branch_changes_are_ignored_while_new_branches_are_detected(self):
+        repo = dict(source='https://github.com/example/app', branch='', all_branches=1,
+                    open_prs=0, targets='[]', include_working=0, rules='', excluded_branches='["skip"]')
+        catalog = dict(default='main', branches=[dict(name='main', head='a'), dict(name='skip', head='b')])
+        old = revision_token(repo, catalog, [])
+        catalog["branches"][1]["head"] = "changed"
+        self.assertEqual(revision_token(repo, catalog, []), old)
+        catalog["branches"].append(dict(name='new', head='c'))
+        self.assertNotEqual(revision_token(repo, catalog, []), old)

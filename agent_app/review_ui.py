@@ -18,14 +18,17 @@ from . import APP_NAME, __version__
 from .review_analysis import CATEGORIES, repair_prompt, batch_repair_prompt
 from .review_source import normalize_source
 from .review_service import ReviewService
+from .review_revision import excluded_branches, included_branches, included_pulls
 from .review_theme import STYLE, ACCENT, BROWN, MUTED, label, button, load_fonts, clear, scroll_body, FlowLayout, size_popup, reveal, RoundedSurface, RoundedDialog
 from .github_ui import GitHubDialog
+from .github_actions import STATE_LABELS, finding_targets, needs_attention, repair_instruction
 from .review_bubble import ReviewBubble
 from .single_instance import SingleInstance
 from .review_watch import ChangeWatcher
 from .finding_history_ui import FindingHistory
 
 CONFIG = {"name": APP_NAME, "kind": "code", "character_name": "코드 비서", "accent": ACCENT}
+FINDINGS_PER_PAGE = 24
 
 
 def rounded(widget):
@@ -84,7 +87,7 @@ class RepoDialog(RoundedDialog):
         self.all_branches = QCheckBox("전체 브랜치를 함께 살펴보기")
         self.all_branches.setChecked(bool(repo["all_branches"]) if repo else True)
         layout.addWidget(self.all_branches)
-        layout.addWidget(label("새 브랜치도 자동으로 포함돼요. 특정 브랜치는 저장소의 ‘브랜치 보기’에서 고를 수 있어요.", 12, MUTED))
+        layout.addWidget(label("새 브랜치도 따라가요. 제외할 브랜치는 ‘브랜치 보기’에서 체크를 풀어 주세요.", 12, MUTED))
         self.open_prs = QCheckBox("열린 PR도 자동으로 포함")
         self.open_prs.setChecked(bool(repo["open_prs"]) if repo else False)
         layout.addWidget(self.open_prs)
@@ -200,6 +203,8 @@ class BranchDialog(RoundedDialog):
         self.panel, self.repo = panel, panel.service.repo(repo_id)
         self.rows, self.loading, self.base = [], False, self.repo["branch"]
         self.selected = set(json.loads(self.repo["targets"]))
+        self.excluded = excluded_branches(self.repo)
+        self.pulls = []
         self.setWindowFlags(Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
         self.setStyleSheet(STYLE)
         size_popup(self)
@@ -209,7 +214,7 @@ class BranchDialog(RoundedDialog):
         layout.setContentsMargins(22, 18, 22, 20)
         layout.setSpacing(12)
         head = QHBoxLayout()
-        head.addWidget(label("브랜치 전체", 16, BROWN, True), 1)
+        head.addWidget(label("분석할 브랜치", 16, BROWN, True), 1)
         head.addWidget(button("✕", self.reject, role="icon"))
         layout.addLayout(head)
         layout.addWidget(label(self.repo["name"], 13, MUTED))
@@ -220,7 +225,7 @@ class BranchDialog(RoundedDialog):
         self.search.textChanged.connect(self.filter)
         layout.addWidget(self.search)
         row = QHBoxLayout()
-        self.all = QCheckBox("전체 · 새 브랜치도 포함")
+        self.all = QCheckBox("새 브랜치도 자동 포함")
         self.all.setChecked(bool(self.repo["all_branches"]))
         self.all.toggled.connect(self.toggle_all)
         row.addWidget(self.all, 1)
@@ -231,7 +236,7 @@ class BranchDialog(RoundedDialog):
         self.list.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         self.list.itemChanged.connect(self.choose)
         layout.addWidget(self.list, 1)
-        self.open_prs = QCheckBox("열린 PR 전체 · 새 PR도 자동 포함")
+        self.open_prs = QCheckBox("열린 PR 자동 포함")
         self.open_prs.setChecked(bool(self.repo["open_prs"]))
         layout.addWidget(self.open_prs)
         self.pr_info = label("열린 PR은 다음 분석 때 갱신해요.", 12, MUTED)
@@ -248,8 +253,8 @@ class BranchDialog(RoundedDialog):
         layout.addWidget(self.prs)
         self.prs.setVisible(not self.open_prs.isChecked())
         self.open_prs.toggled.connect(lambda checked:self.prs.setVisible(not checked))
-        self.open_prs.toggled.connect(lambda checked:self.pr_list.setVisible(checked and self.pr_list.count() > 0))
-        layout.addWidget(label("목록은 끝까지 모두 표시돼요. 전체를 켜면 새 브랜치도 다음 분석에 포함돼요.", 12, MUTED))
+        self.open_prs.toggled.connect(self.update_scope_info)
+        layout.addWidget(label("체크한 브랜치를 살펴봐요. 기준 브랜치는 비교에 사용해요.", 12, MUTED))
         self.error = label("", 12, "#d65151")
         layout.addWidget(self.error)
         row = QHBoxLayout()
@@ -283,18 +288,8 @@ class BranchDialog(RoundedDialog):
 
     def received(self, data):
         self.rows = data["branches"]
-        base = self.repo["branch"] or data["default"]
-        self.base = base
-        self.info.setText(f"전체 {len(self.rows)}개 · 기준 {base or 'HEAD'}")
-        pulls = data.get("pulls", [])
-        self.pr_info.setText(f"열린 PR {len(pulls)}개 · 닫힌 PR은 자동 제외" if self.repo["open_prs"] else "자동 포함은 GitHub 로그인이 필요해요.")
-        self.pr_list.clear()
-        for pull in pulls:
-            item = QListWidgetItem(f"#{pull['number']} {pull['title']}\n→ {pull['base']}" + (" · 초안" if pull.get("draft") else ""))
-            item.setToolTip("두 번 눌러 GitHub에서 열기")
-            item.setData(Qt.ItemDataRole.UserRole, pull["url"])
-            self.pr_list.addItem(item)
-        self.pr_list.setVisible(self.open_prs.isChecked() and bool(pulls))
+        self.base = base = self.repo["branch"] or data["default"]
+        self.pulls = data.get("pulls", [])
         self.list.blockSignals(True)
         self.list.clear()
         for row in self.rows:
@@ -303,12 +298,14 @@ class BranchDialog(RoundedDialog):
             item.setToolTip(row["name"] + "\n" + row["head"] + ("\n" + row["subject"] if row["subject"] else ""))
             item.setData(Qt.ItemDataRole.UserRole, row["name"])
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            item.setCheckState(Qt.CheckState.Checked if self.all.isChecked() or row["name"] in self.selected or row["name"] == base else Qt.CheckState.Unchecked)
+            checked = row["name"] == base or row["name"] not in self.excluded and (self.all.isChecked() or row["name"] in self.selected)
+            item.setCheckState(Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked)
             if row["name"] == base:
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsUserCheckable)
             self.list.addItem(item)
         self.list.blockSignals(False)
         self.filter()
+        self.update_scope_info()
 
     def filter(self, *_):
         text = self.search.text().strip().casefold()
@@ -317,26 +314,51 @@ class BranchDialog(RoundedDialog):
             item.setHidden(text not in item.text().casefold())
 
     def toggle_all(self, checked):
+        if not checked:
+            self.update_scope_info()
+            return
         self.list.blockSignals(True)
         for i in range(self.list.count()):
             item = self.list.item(i)
             if item.flags() & Qt.ItemFlag.ItemIsUserCheckable:
-                item.setCheckState(Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked)
+                name = item.data(Qt.ItemDataRole.UserRole)
+                item.setCheckState(Qt.CheckState.Unchecked if name in self.excluded else Qt.CheckState.Checked)
         self.list.blockSignals(False)
-        self.selected = {self.list.item(i).data(Qt.ItemDataRole.UserRole) for i in range(self.list.count()) if self.list.item(i).checkState() == Qt.CheckState.Checked}
+        self.update_scope_info()
 
-    def choose(self, *_):
-        self.all.blockSignals(True)
-        self.all.setChecked(False)
-        self.all.blockSignals(False)
-        self.selected = {self.list.item(i).data(Qt.ItemDataRole.UserRole) for i in range(self.list.count()) if self.list.item(i).checkState() == Qt.CheckState.Checked}
+    def choose(self, item):
+        name = item.data(Qt.ItemDataRole.UserRole)
+        if item.checkState() == Qt.CheckState.Checked:
+            self.excluded.discard(name)
+        elif name != self.base:
+            self.excluded.add(name)
+        self.update_scope_info()
+
+    def update_scope_info(self, *_):
+        if self.rows:
+            names = {row["name"] for row in self.rows}
+            checked = {item.data(Qt.ItemDataRole.UserRole) for index in range(self.list.count())
+                       if (item := self.list.item(index)).checkState() == Qt.CheckState.Checked}
+            self.selected = (self.selected - names) | checked
+            self.info.setText(f"{len(checked)}/{len(self.rows)}개 분석 · 기준 {self.base or 'HEAD'}")
+        pulls = included_pulls({"excluded_branches": json.dumps(sorted(self.excluded))}, self.pulls)
+        self.pr_info.setText(f"열린 PR {len(pulls)}개 포함" if self.open_prs.isChecked() else "PR을 직접 추가할 수 있어요.")
+        self.pr_list.clear()
+        for pull in pulls:
+            item = QListWidgetItem(f"#{pull['number']} {pull['title']}\n→ {pull['base']}" + (" · 초안" if pull.get("draft") else ""))
+            item.setToolTip("두 번 눌러 GitHub에서 열기")
+            item.setData(Qt.ItemDataRole.UserRole, pull["url"])
+            self.pr_list.addItem(item)
+        self.pr_list.setVisible(self.open_prs.isChecked() and bool(pulls))
 
     def save(self):
         try:
-            selected = [self.list.item(i).data(Qt.ItemDataRole.UserRole) for i in range(self.list.count()) if self.list.item(i).checkState() == Qt.CheckState.Checked and self.list.item(i).data(Qt.ItemDataRole.UserRole) != self.base]
+            selected = sorted(t for t in self.selected if t != self.base and not t.startswith("pr:"))
+            excluded = self.excluded | {row["name"] for row in self.rows if row["name"] not in self.selected}
             if not self.open_prs.isChecked():
                 selected += self.prs.text().split()
-            self.panel.service.set_scope(self.repo["id"], self.all.isChecked(), selected, open_prs=self.open_prs.isChecked())
+            self.panel.service.set_scope(self.repo["id"], self.all.isChecked(), selected,
+                                         open_prs=self.open_prs.isChecked(), excluded=excluded - {self.base})
             self.accept()
         except Exception as exc:
             self.error.setText(str(exc))
@@ -350,8 +372,10 @@ class ReviewPanel(RoundedSurface):
         self.service = service or ReviewService(self.root / ".data/code")
         self.repo_id, self.sprite, self.busy = None, None, False
         self.page, self.category = "brief", "all"
+        self.finding_page = 0
         self.lifecycle, self.recheck_id, self.force_repos = "active", None, set()
         self.recheck_targets = {}
+        self.actions_pending = set()
         self.full_scope_scan, self.scan_audit = False, None
         self.changed_repos = set()
         self.workers, self.queue, self.expanded = [], [], set()
@@ -472,6 +496,8 @@ class ReviewPanel(RoundedSurface):
 
     def select_repo(self, repo_id):
         self.repo_id = repo_id
+        self.finding_page = 0
+        self.expanded.clear()
         self.save_settings()
         self.refresh(reset_scroll=True)
 
@@ -568,17 +594,29 @@ class ReviewPanel(RoundedSurface):
                 bulk_box.setVisible(self.lifecycle != 'resolved')
                 self.cards.addWidget(bulk_box)
                 self.chips([("all", "전체"), ("structure", "구조"), ("placeholder_code", "더미"), ("overengineering", "과한 설계"), ("circular_dependency", "순환"), ("missing_change", "변경 누락"), ("structural_conflict", "충돌")], self.category, self.set_category, "filter")
-                entries = [(r, f) for r in selected for f in self.service.findings(r["id"], self.lifecycle == "resolved")
-                           if f["category"] != "feature" and self.category in {"all", f["category"]} and
-                           (f["state"] == "resolved" if self.lifecycle == "resolved" else
-                            (f["state"] != "open" or f["confidence"] != "high") if self.lifecycle == "review" else
-                            (f["state"] == "open" and f["confidence"] == "high"))]
-                entries.sort(key=lambda pair: (pair[1]["confidence"] != "high", pair[1]["severity"] != "problem", -pair[1]["last_seen"]))
+                entries = self.brief_findings(selected, current)
+                for index, (_, finding) in enumerate(entries):
+                    if finding["id"] in self.expanded:
+                        self.finding_page = index // FINDINGS_PER_PAGE
+                        break
+                last_page = max(0, (len(entries) - 1) // FINDINGS_PER_PAGE)
+                self.finding_page = min(self.finding_page, last_page)
+                start = self.finding_page * FINDINGS_PER_PAGE
                 for repo in selected:
                     if repo["error"]:
                         self.card(repo["name"] + " · 확인이 필요해요", repo["error"], "분석 미완료")
-                for repo, finding in entries:
+                for repo, finding in entries[start:start + FINDINGS_PER_PAGE]:
                     self.finding_card(repo, finding)
+                if last_page:
+                    navigation = QHBoxLayout()
+                    prev = button("이전", lambda: self.move_findings(-1), role="chip")
+                    prev.setEnabled(self.finding_page > 0)
+                    following = button("다음", lambda: self.move_findings(1), role="chip")
+                    following.setEnabled(self.finding_page < last_page)
+                    navigation.addWidget(prev)
+                    navigation.addWidget(label(f"{start + 1}–{min(start + FINDINGS_PER_PAGE, len(entries))} / {len(entries)}", 12, MUTED), 1)
+                    navigation.addWidget(following)
+                    self.cards.addLayout(navigation)
                 if not entries:
                     errors = sum(bool(r["error"]) for r in selected)
                     unreviewed = sum(not bool(r["last_head"]) for r in selected)
@@ -598,8 +636,9 @@ class ReviewPanel(RoundedSurface):
                 for repo in selected:
                     catalog = self.service.catalog(repo["id"])
                     total = len(catalog["branches"])
-                    scope = f"전체 브랜치 {total}개" if total and repo["all_branches"] else ("전체 브랜치" if repo["all_branches"] else "선택한 브랜치")
-                    if repo["open_prs"]: scope += f" · 열린 PR {len(catalog.get('pulls', []))}개" if catalog["checked"] else " · 열린 PR 전체"
+                    count = len(included_branches(repo, catalog))
+                    scope = f"브랜치 {count}/{total}개" if total else "선택한 브랜치"
+                    if repo["open_prs"]: scope += f" · 열린 PR {len(included_pulls(repo, catalog.get('pulls', [])))}개" if catalog["checked"] else " · 열린 PR 자동"
                     self.cards.addWidget(label(repo["name"] + " · " + scope, 12, MUTED))
                     coverage = self.service.latest_coverage(repo['id'])
                     if coverage.get('omitted_files'):
@@ -613,16 +652,17 @@ class ReviewPanel(RoundedSurface):
             row = QHBoxLayout()
             row.addWidget(label(f"연결한 저장소 {len(repos)}곳", 15, BROWN, True), 1)
             full_scan = button("전체 점검", self.scan_all, role="chip")
-            full_scan.setToolTip("이번에만 모든 연결 저장소의 전체 브랜치와 열린 PR을 확인해요. 기본 설정은 유지해요.")
+            full_scan.setToolTip("이번에만 모든 저장소의 대상 브랜치와 열린 PR을 확인해요. 체크를 푼 브랜치는 제외해요.")
             full_scan.setEnabled(bool(repos) and not self.busy)
             row.addWidget(full_scan)
             self.cards.addLayout(row)
             for repo in repos:
                 catalog = self.service.catalog(repo["id"])
-                count = len(catalog["branches"])
-                scope = (f"전체 {count}개 브랜치" if count else "전체 브랜치") if repo["all_branches"] else f"선택 {len(json.loads(repo['targets']))}개 + 기준"
+                total = len(catalog["branches"])
+                count = len(included_branches(repo, catalog))
+                scope = f"브랜치 {count}/{total}개" if total else "선택한 브랜치"
                 detail = scope + (" · 미커밋 포함" if repo["include_working"] else "")
-                if repo["open_prs"]: detail += f" · 열린 PR {len(catalog.get('pulls', []))}개" if catalog["checked"] else " · 열린 PR 전체"
+                if repo["open_prs"]: detail += f" · 열린 PR {len(included_pulls(repo, catalog.get('pulls', [])))}개" if catalog["checked"] else " · 열린 PR 자동"
                 inner = self.card(repo["name"], detail, "변경 시 점검 " + ("켜짐" if repo["auto"] else "꺼짐"))
                 row = QHBoxLayout()
                 for title, fn in [("브랜치 보기", lambda r=repo:self.branches(r["id"])), ("설정", lambda r=repo:self.edit_repo(r["id"]))]:
@@ -640,12 +680,39 @@ class ReviewPanel(RoundedSurface):
         self.rendered_page = self.page
         QTimer.singleShot(0, self, lambda: self.scroll.verticalScrollBar().setValue(position) if generation == self.render_generation else None)
 
+    def brief_findings(self, selected, current):
+        if self.lifecycle == "resolved":
+            entries = [(repo, f) for repo in selected for f in self.service.findings(repo["id"], True, limit=None)
+                       if f["state"] == "resolved" and f["category"] != "feature"]
+        else:
+            entries = [(repo, f) for repo, f in current
+                       if (f["state"] == "open" and f["confidence"] == "high") == (self.lifecycle == "active")]
+        latest = {}
+        for repo, finding in current:
+            latest[repo["id"]] = max(latest.get(repo["id"], 0), finding["last_seen"])
+
+        def order(pair):
+            repo, f = pair
+            new = f["state"] == "open" and f["first_seen"] == f["last_seen"] == latest.get(repo["id"])
+            return (not new, f["confidence"] != "high", f["severity"] != "problem", -f["last_seen"], f["id"])
+
+        return sorted((pair for pair in entries if self.category in {"all", pair[1]["category"]}), key=order)
+
+    def move_findings(self, offset):
+        self.finding_page = max(0, self.finding_page + offset)
+        self.expanded.clear()
+        self.refresh(reset_scroll=True)
+
     def set_category(self, category):
         self.category = category
+        self.finding_page = 0
+        self.expanded.clear()
         self.refresh(reset_scroll=True)
 
     def set_lifecycle(self, lifecycle):
         self.lifecycle = lifecycle
+        self.finding_page = 0
+        self.expanded.clear()
         self.refresh(reset_scroll=True)
 
     def finding_card(self, repo, finding):
@@ -726,6 +793,7 @@ class ReviewPanel(RoundedSurface):
                         instruction_button.setText('지시문 접기' if visible else '수정 지시문 내용 보기')
                     instruction_button = button('수정 지시문 내용 보기', toggle_instruction, role='chip')
                     inner.addWidget(instruction_button); inner.addWidget(instruction)
+                self.actions_evidence(inner, repo, finding)
                 row = QHBoxLayout()
                 row.addWidget(button('원문', lambda:self.open_evidence(finding), role='icon'))
                 row.addStretch()
@@ -739,6 +807,52 @@ class ReviewPanel(RoundedSurface):
                     recheck = button('현재 코드로 다시 확인' if resolved else '수정됐는지 확인', lambda:self.recheck_finding(repo, finding), role='chip')
                     recheck.setEnabled(not self.busy)
                     inner.addWidget(recheck)
+
+    def actions_evidence(self, layout, repo, finding):
+        targets, scope = finding_targets(finding)
+        if scope:
+            layout.addWidget(label(" · ".join(scope), 12, MUTED))
+        if not targets or not (repo["source"].startswith("https://github.com/") or finding.get("web")):
+            return
+        report = self.service.actions_report(repo["id"])
+        available = report.get("commits", {})
+        if report.get("error"):
+            layout.addWidget(label(report["error"], 12, MUTED))
+        else:
+            for target in targets:
+                head = target["head"]
+                commit = available.get(head)
+                if commit is None:
+                    continue
+                state = STATE_LABELS.get(commit["state"], "검사 결과 미확인")
+                layout.addWidget(label(f'{target["label"]} · {head[:8]} · {state} · {commit["tests"]}', 12, MUTED))
+                failure = next((run for run in commit.get("runs", ()) if needs_attention(run)), None)
+                if failure:
+                    detail = failure.get("diagnosis", {}).get("cause")
+                    if detail:
+                        layout.addWidget(label(detail, 12))
+                    layout.addWidget(button("실패 실행 보기", lambda run=failure: QDesktopServices.openUrl(QUrl(run["url"])), role="chip"))
+                    layout.addWidget(button("테스트 수정 지시문 복사", lambda run=failure: QApplication.clipboard().setText(repair_instruction(report, run)), role="chip"))
+        pending = repo["id"] in self.actions_pending
+        text = "검사 결과를 가져오고 있어요" if pending else "GitHub 검사 결과 보기"
+        lookup = button(text, lambda: self.load_actions(repo["id"], targets), role="chip")
+        lookup.setEnabled(not pending)
+        layout.addWidget(lookup)
+
+    def load_actions(self, repo_id, targets):
+        if repo_id in self.actions_pending:
+            return
+        self.actions_pending.add(repo_id)
+        worker = Worker(lambda: self.service.refresh_actions(repo_id, targets, on_demand=True))
+        self.workers.append(worker)
+        def finished():
+            self.actions_pending.discard(repo_id)
+            self.workers.remove(worker)
+            self.refresh()
+        worker.signals.error.connect(lambda error: self.status.setText(error))
+        worker.signals.finished.connect(finished)
+        self.refresh()
+        QThreadPool.globalInstance().start(worker)
 
     def recheck_finding(self, repo, finding):
         if self.busy or QApplication.activeModalWidget(): return
@@ -1025,6 +1139,9 @@ class ReviewPanel(RoundedSurface):
         QThreadPool.globalInstance().start(worker)
 
     def progress(self, token, name, action, text):
+        if action == "findings":
+            self.refresh()
+            action = "thinking"
         self.progress_text = text
         if self.scan_audit is not None:
             self.scan_audit["events"].append({"stamp": time.time(), "repository": name, "stage": action, "message": text})
@@ -1085,6 +1202,8 @@ class ReviewPanel(RoundedSurface):
         notice = self.service.pending_notice(repo_id)
         if not notice["findings"] and not notice["error"]: return
         titles = [("다시 발견 · " if f.get("reopened_count") else "") + f["title"] for f in notice["findings"][:2]]
+        if len(notice["findings"]) > 2:
+            titles = [f"확인할 코드 문제 {len(notice['findings'])}건이 있어요.", titles[0]]
         if notice["error"]: titles.insert(0, "분석 연결 확인이 필요해요")
         self.latest_bubble_message = notice["repo"]["name"] + "\n" + "\n".join(titles)
         self.sprite.actions.pulse("attention", 12)

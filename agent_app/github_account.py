@@ -151,6 +151,8 @@ def open_pulls(source):
     name = web.removeprefix("https://github.com/")
     rows = api_pages(f"repos/{name}/pulls?state=open&per_page=100")
     return [{"number": r["number"], "title": r["title"], "head": r["head"]["sha"],
+             "head_branch": r["head"].get("ref", ""),
+             "same_repository": ((r["head"].get("repo") or {}).get("full_name") or "").casefold() == name.casefold(),
              "base": r["base"]["ref"], "draft": bool(r.get("draft")), "url": web + "/pull/" + str(r["number"])} for r in rows]
 
 

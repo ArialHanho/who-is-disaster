@@ -85,6 +85,33 @@ class ActionsEvidenceTests(unittest.TestCase):
             run = self.collect()["commits"][HEAD]["runs"][0]
             self.assertEqual(run["diagnosis"]["method"], "steps")
 
+    def test_issue_card_fetches_the_reviewed_commit_only_when_clicked(self):
+        app = QApplication.instance() or QApplication([])
+        with tempfile.TemporaryDirectory() as temp, patch("agent_app.finding_history_ui.FindingHistory.load", lambda self: None), \
+                patch.object(ci.codex_provider, "generate") as generate:
+            service = ReviewService(Path(temp) / "db")
+            rid = service.save_repo("example/app")
+            service.record(service.repo(rid), snapshot({"app.py": "value = 1\n"}, head=HEAD), "fixture", {"findings": [finding()]})
+            panel = ReviewPanel(temp, service)
+            panel.timer.stop()
+            try:
+                panel.show_finding(service.findings(rid)[0])
+                self.assertEqual(self.calls, [])
+                next(b for b in panel.findChildren(QPushButton) if b.text() == "GitHub 검사 결과 보기").click()
+                deadline = time.monotonic() + 5
+                while panel.actions_pending and time.monotonic() < deadline:
+                    QTest.qWait(10)
+                self.assertFalse(panel.actions_pending)
+                self.assertIn("runs?head_sha=" + HEAD, self.calls)
+                self.assertEqual(service.actions_report(rid)["commits"][HEAD]["state"], "failed")
+                self.assertTrue(any(b.text() == "테스트 수정 지시문 복사" for b in panel.findChildren(QPushButton)))
+                self.assertFalse(service.pending_notice(rid)["ci"])
+                generate.assert_not_called()
+            finally:
+                panel.watcher.close()
+                panel.deleteLater()
+                app.processEvents()
+
     def test_passed_build_is_not_test_pass_and_virtual_or_old_code_cannot_inherit(self):
         self.rows, self.jobs = [raw_run(conclusion="success")], [job("success", "Build package")]
         report = self.collect()
@@ -96,6 +123,16 @@ class ActionsEvidenceTests(unittest.TestCase):
         self.assertIn("가상 통합본은 미실행", ci.finding_execution(item, report))
         item.update(sources={"worktree:x": {"kind": "worktree", "head": HEAD}}, evidence=[{"view": "worktree:x"}])
         self.assertIn("미커밋", ci.finding_execution(item, report))
+
+    def test_actions_targets_keep_evidence_and_fix_commits_separate(self):
+        item = {**finding(), "head": HEAD, "state": "uncertain",
+                "verification": {"head": "b" * 40, "evidence": []}}
+        self.assertEqual(ci.finding_targets(item)[0][0]["head"], HEAD)
+        item.update(state="resolved", snapshot_id="old-virtual",
+                    resolution={"after": {"head": "c" * 40, "evidence": []}})
+        targets, scope = ci.finding_targets(item)
+        self.assertEqual(targets[0]["head"], "c" * 40)
+        self.assertEqual(scope, [])
 
     def test_green_workflow_with_reported_test_failure_still_has_diagnosis_and_alert(self):
         self.rows = [raw_run(conclusion="success")]

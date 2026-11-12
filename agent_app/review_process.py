@@ -61,6 +61,7 @@ def review(service, repo_id, progress=None, **options):
                                    stderr=subprocess.DEVNULL, creationflags=flags)
         with _lock: _running.add(process)
         stamp = None
+        published = False
         try:
             while True:
                 try:
@@ -68,7 +69,11 @@ def review(service, repo_id, progress=None, **options):
                     if changed != stamp:
                         event = json.loads((folder/'progress.json').read_text(encoding='utf-8'))
                         stamp = changed
-                        if progress: progress(event['stage'], event['text'])
+                        if progress and event.get('findings_ready') and not published:
+                            progress('findings', '브리핑에서 발견한 문제를 볼 수 있어요')
+                            published = True
+                        if progress and event['stage'] != 'findings':
+                            progress(event['stage'], event['text'])
                 except (OSError, ValueError): pass
                 try:
                     process.wait(timeout=.15)
@@ -114,8 +119,11 @@ def worker_main(request_path):
         spec = json.loads(request.read_text(encoding='utf-8'))
         watch_parent(spec['parent_pid'])
         from .review_service import ReviewService
+        findings_ready = False
         def progress(stage, text):
-            write_json(request.with_name('progress.json'), {'stage':stage, 'text':text})
+            nonlocal findings_ready
+            findings_ready |= stage == 'findings'
+            write_json(request.with_name('progress.json'), {'stage':stage, 'text':text, 'findings_ready':findings_ready})
         result = ReviewService(Path(spec['root'])).review(spec['repo_id'], progress=progress, **spec['options'])
         write_json(request.with_name('result.json'), {'result':result})
         return 0

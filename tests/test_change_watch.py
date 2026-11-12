@@ -61,6 +61,28 @@ class ChangeWatchTests(unittest.TestCase):
                 QThreadPool.globalInstance().waitForDone()
                 panel.deleteLater();app.processEvents()
 
+    def test_saved_uncommitted_change_is_detected_and_matches_capture(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            repo = root / "repo"
+            repo.mkdir()
+            git(repo, "init", "-b", "main", isolated=True)
+            file = repo / "app.py"
+            file.write_text("value = 1\n")
+            (repo / ".gitattributes").write_text("*.py filter=fixture\n")
+            git(repo, "add", "app.py", ".gitattributes", isolated=True)
+            git(repo, "commit", "-m", "fixture", isolated=True)
+            git(repo, "config", "filter.fixture.clean", "false", isolated=True)
+            git(repo, "config", "filter.fixture.required", "true", isolated=True)
+            service = ReviewService(root / "db", lambda *_: {"findings": [], "ai_error": ""}, offline_actions)
+            rid = service.save_repo(str(repo), auto=True, include_working=True)
+            before = revision(service.repo(rid))
+            file.write_text("value = 2\n")
+            after = revision(service.repo(rid))
+            self.assertNotEqual(before, after)
+            self.assertEqual(service.review(rid)["watch_token"], after)
+            self.assertEqual(revision(service.repo(rid)), after)
+
     def test_remote_probe_uses_refs_and_pr_heads_and_remembers_success(self):
         app = QApplication.instance() or QApplication([])
         with tempfile.TemporaryDirectory() as temp:
