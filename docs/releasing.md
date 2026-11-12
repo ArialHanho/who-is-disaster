@@ -24,7 +24,7 @@ Inno Setup 경로는 실제 설치 위치로 바꾸세요. 스크립트는 `agen
 
 ## 배포
 
-1. `agent_app/__init__.py`의 버전과 `CHANGELOG.md`, README의 버전을 함께 갱신합니다.
+1. `agent_app/__init__.py`의 버전과 `CHANGELOG.md`를 함께 갱신합니다.
 2. 관련 검사를 통과시키고 기본 캐릭터로 실행·말풍선·설정을 확인합니다.
 3. `.data`, 개인 팩, 사진, 로그, 가상환경, 캐시가 Git 추적에 없는지 확인합니다.
 4. 태그를 만들고 GitHub Release에 설치 파일을 첨부합니다. 설치 파일 자체는 Git 커밋에 넣지 않습니다.
