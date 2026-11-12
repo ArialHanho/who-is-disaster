@@ -145,7 +145,7 @@ class FollowupEvidenceTests(unittest.TestCase):
     def test_same_source_avoids_ai_and_failed_recheck_stays_pending(self):
         old = snapshot({"app.py": "value = 1\n"})
         issue = tracked(old)
-        with patch("agent_app.review_followup.codex_provider.generate", side_effect=AssertionError("no call")):
+        with patch("agent_app.review_followup.ai_provider.generate", side_effect=AssertionError("no call")):
             self.assertEqual(verify(old, [issue], [])[0][1]["state"], "open")
         now = snapshot({"app.py": "value = 2\n"})
         def failed(*args, **kwargs): raise ValueError("offline")
@@ -222,7 +222,7 @@ class FollowupPersistenceTests(unittest.TestCase):
         self.rid = self.service.save_repo("https://github.com/example/app")
         self.patches = [patch.object(self.service.source, "prepare", side_effect=lambda *a:deepcopy(self.data)),
                         patch.object(self.service.source, "read", side_effect=lambda *a:deepcopy(self.data)),
-                        patch("agent_app.review_followup.codex_provider.status", return_value={"ready": True, "label": "ChatGPT"})]
+                        patch("agent_app.review_followup.ai_provider.status", return_value={"ready": True, "label": "ChatGPT"})]
         for p in self.patches: p.start()
         self.service.review(self.rid)
         self.service.mark_notified(self.service.pending_notice(self.rid))
@@ -234,7 +234,7 @@ class FollowupPersistenceTests(unittest.TestCase):
     def fix(self):
         self.output = []
         self.data = snapshot({"app.py": "value = 2\n"}, head="c"*40)
-        with patch("agent_app.review_followup.codex_provider.generate", return_value={"result": {"checks": [answer()]}}):
+        with patch("agent_app.review_followup.ai_provider.generate", return_value={"result": {"checks": [answer()]}}):
             self.service.review(self.rid)
 
     def test_fix_is_silent_persistent_and_regression_alerts_only_once(self):
@@ -262,7 +262,7 @@ class FollowupPersistenceTests(unittest.TestCase):
     def test_provider_error_retries_and_uncertain_remains_in_briefing(self):
         self.output = []
         self.data = snapshot({"app.py": "value = 2\n"}, head="c"*40)
-        with patch("agent_app.review_followup.codex_provider.generate", side_effect=ValueError("offline")) as generated:
+        with patch("agent_app.review_followup.ai_provider.generate", side_effect=ValueError("offline")) as generated:
             self.service.review(self.rid)
             self.assertEqual(self.service.findings(self.rid)[0]["state"], "uncertain")
             self.assertIn("재확인", self.service.repo(self.rid)["error"])
@@ -273,7 +273,7 @@ class FollowupPersistenceTests(unittest.TestCase):
         self.fix()
         first = self.service.findings(self.rid, True)[0]['resolution']
         self.data['head'] = 'e'*40
-        with patch('agent_app.review_followup.codex_provider.generate', side_effect=AssertionError('unchanged code needs no AI')):
+        with patch('agent_app.review_followup.ai_provider.generate', side_effect=AssertionError('unchanged code needs no AI')):
             self.service.review(self.rid)
         current = self.service.findings(self.rid, True)[0]
         self.assertEqual(current['resolution'], first)

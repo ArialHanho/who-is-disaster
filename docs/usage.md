@@ -4,12 +4,26 @@
 
 ## 1. 어디를 볼지 정하기
 
-1. [Windows 설치 파일](https://github.com/ArialHanho/who-is-disaster/releases/latest)을 받아 실행합니다. Git 2.38 이상과 Codex CLI를 설치하고 `codex login`으로 로그인합니다. 연결 상태는 **설정 → 로그인 연결 확인**에서 볼 수 있습니다.
+1. [Windows 설치 파일](https://github.com/ArialHanho/who-is-disaster/releases/latest)을 받아 실행합니다. Git 2.38 이상을 설치하고 아래 안내로 분석 AI를 연결합니다.
 2. 캐릭터 우클릭 → **비서 열기 → 저장소**로 갑니다. **GitHub 연결**은 내 저장소나 접근 가능한 조직 저장소를 여러 개 고를 수 있습니다. 작업 중인 Git 폴더는 **로컬 폴더**로 연결하거나 캐릭터 위에 끌어놓습니다. 주소를 알고 있으면 **주소 입력**도 됩니다.
 3. **브랜치 보기**에서 볼 브랜치만 체크합니다. 새 브랜치를 계속 보고 싶을 때 **새 브랜치도 자동 포함**을 켜세요. 기준 브랜치는 비교에 사용합니다.
 4. **열린 PR 자동 포함**을 켜면 선택 범위에서 열린 PR도 확인합니다. 같은 저장소에서 체크되지 않은 브랜치의 PR은 분석 대상에서 빠집니다. 아직 커밋 안 한 코드도 보려면 로컬 연결의 **등록된 작업 폴더의 미커밋 변경 포함**을 켭니다.
 
 연결을 끊을 때는 **저장소 → 설정 → 연결 해제**를 누릅니다. 이 비서에 저장된 연결과 분석 기록이 제거됩니다.
+
+### 분석 AI 연결
+
+**비서 열기 → 설정 → 분석 AI**에서 하나를 고릅니다. **공식 로그인**으로 해당 CLI의 계정에 로그인하고 **로그인 연결 확인 → AI 설정 저장**을 누릅니다.
+
+| 선택 | 공식 CLI와 계정 |
+|---|---|
+| Codex | `codex login`으로 ChatGPT 계정에 로그인 · [Codex CLI](https://learn.chatgpt.com/docs/cli) |
+| Claude | `claude auth login --claudeai`로 Claude 구독 계정에 로그인 · [Claude Code 설치](https://code.claude.com/docs/en/setup) |
+| Gemini | `agy`를 실행해 Google 계정에 로그인 · [Antigravity CLI 설치](https://antigravity.google/docs/install) |
+
+분석·수정 확인·Actions 실패 원인 검토에는 저장한 AI의 계정 한도가 적용됩니다. 앱은 API 키를 저장하거나 다른 AI로 자동 전환하지 않습니다. 모델 칸을 비우면 Codex와 Claude는 CLI 기본 모델, Gemini는 Gemini 3.5 Flash를 씁니다.
+
+Gemini 연결은 추가 Google One 크레딧 사용을 끕니다. Claude에서 계정의 한도 초과 사용을 켜 둔 경우에는 그 설정이 적용됩니다. [Antigravity CLI 설정](https://antigravity.google/docs/cli/reference/) · [Claude 사용 크레딧](https://support.claude.com/en/articles/12429409-manage-usage-credits-for-paid-claude-plans)
 
 ## 2. 문제를 보고 고치기
 
@@ -19,7 +33,7 @@
 - **브리핑** — 새 문제부터 보세요. 과한 설계, 순환, 변경 누락 같은 분류를 누르면 필요한 항목으로 좁힐 수 있습니다.
 - **AI 수정 지시문 복사** — 문제 카드를 펼친 뒤 복사해 현재 작업하는 AI에 전달합니다. 수정 후 **수정됐는지 확인**을 누르면 현재 코드와 비교합니다.
 - 여러 문제를 함께 고치려면 카드 왼쪽에 체크하세요. 같은 필터에서 페이지를 넘겨도 선택이 유지됩니다. **지시문 보기**에서 내용을 확인하고 **복사**를 누르면 됩니다. **수정 확인**도 체크한 항목에 적용됩니다.
-- **GitHub 검사 결과 보기** — 문제나 수정에 해당하는 커밋의 Actions 실행을 가져옵니다. 실패한 실행은 실패 단계와 테스트 수정 지시문을 확인할 수 있습니다. 가상 통합본과 미커밋 코드는 미실행으로 표시됩니다.
+- **GitHub 검사 결과 보기** — 해당 커밋의 Actions 실행과 테스트 단계 결과를 가져옵니다. 실패 단계와 로그로 수정 지시문을 만들고, **AI로 실패 원인 확인**을 누르면 그 실행의 로그만 분석합니다. 가상 통합본과 미커밋 코드는 미실행으로 표시됩니다.
 
 <img src="images/notice-example.png" alt="예제 저장소의 문제와 경고를 파일 위치와 함께 알려주는 불여우" width="320">
 
@@ -40,7 +54,7 @@
 
 ## 막힐 때
 
-- **Codex가 연결 안 됐어요** — 터미널에서 `codex login status`를 확인합니다. 설정에서 모델 칸을 비우면 CLI 기본 모델을 사용합니다.
+- **AI가 연결 안 됐어요** — 공식 CLI를 최신으로 업데이트하고 **로그인 연결 확인**의 안내를 따릅니다. Antigravity의 전역 훅·플러그인·MCP가 설정된 환경에서는 검토 연결을 보류합니다.
 - **Actions 실행 결과가 없어요** — 해당 커밋에서 실행된 워크플로가 있는지 GitHub에서 확인합니다.
 - **분석이 미완료예요** — 브리핑의 수집·AI 오류 안내를 확인한 뒤 다시 실행합니다.
 

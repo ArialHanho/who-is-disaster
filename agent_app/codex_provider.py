@@ -35,6 +35,16 @@ def _run(command, **kwargs):
                           **kwargs)
 
 
+def child_environment():
+    overrides = {"OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN", "CODEX_WORKLOAD_IDENTITY_TOKEN",
+                 "OPENAI_BASE_URL", "OPENAI_API_BASE", "CODEX_API_BASE", "CHATGPT_BASE_URL"}
+    return {key: value for key, value in os.environ.items() if key not in overrides}
+
+
+def review_prompt(context, instructions):
+    return instructions + "\n\n<project_data>\n" + json.dumps(context, ensure_ascii=False) + "\n</project_data>"
+
+
 def find_codex():
     explicit = os.getenv("CODEX_EXECUTABLE")
     if explicit:
@@ -58,10 +68,10 @@ def status(refresh=False):
     if not refresh and cached and time.monotonic() - cached[0] < 30:
         return cached[1]
     try:
-        result = _run([executable, "login", "status"], timeout=8)
+        result = _run([executable, "login", "status"], timeout=8, env=child_environment())
         output = (result.stdout + result.stderr).lower()
-        ready = result.returncode == 0 and "logged in" in output
-        label = "Codex · ChatGPT 로그인" if ready and "chatgpt" in output else ("Codex 로그인됨" if ready else "Codex 로그인 필요")
+        ready = result.returncode == 0 and "logged in using chatgpt" in output
+        label = "Codex · ChatGPT 로그인" if ready else "Codex 로그인 필요"
         info = {"ready": ready, "label": label,
                 "message": "현재 PC의 Codex 로그인을 사용해요." if ready else "터미널에서 codex login으로 로그인한 뒤 다시 확인해 주세요."}
     except (OSError, subprocess.SubprocessError):
@@ -72,7 +82,7 @@ def status(refresh=False):
 
 @lru_cache(maxsize=4)
 def disabled_features(executable):
-    result = _run([executable, "features", "list"], timeout=8)
+    result = _run([executable, "features", "list"], timeout=8, env=child_environment())
     names = {line.split()[0] for line in result.stdout.splitlines() if line.split()}
     if result.returncode or not REQUIRED_DISABLED.issubset(names):
         raise ValueError("설치된 Codex 버전이 이 앱의 제한된 AI 연결을 지원하지 않아요. Codex를 업데이트해 주세요.")
@@ -96,14 +106,12 @@ def generate(context, *, instructions, output_schema, timeout=100):
                    "-c", 'web_search="disabled"']
         for feature in disabled_features(executable):
             command.extend(["--disable", feature])
-        if os.getenv("CODEX_MODEL"):
-            command.extend(["--model", os.environ["CODEX_MODEL"]])
+        model = os.getenv("DISASTER_AI_MODEL", os.getenv("CODEX_MODEL", ""))
+        if model:
+            command.extend(["--model", model])
         command.append("-")
-        prompt = instructions + "\n\n<project_data>\n" + json.dumps(context, ensure_ascii=False) + "\n</project_data>"
-        child_env = {key: value for key, value in os.environ.items()
-                     if key not in {"OPENAI_API_KEY", "CODEX_API_KEY"}}
         try:
-            response = _run(command, input=prompt, cwd=work, timeout=timeout, env=child_env)
+            response = _run(command, input=review_prompt(context, instructions), cwd=work, timeout=timeout, env=child_environment())
         except subprocess.TimeoutExpired:
             raise ReviewTimeout("Codex 응답 시간이 초과됐어요. 잠시 후 다시 시도해 주세요.") from None
         except OSError:

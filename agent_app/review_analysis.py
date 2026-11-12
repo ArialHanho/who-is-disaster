@@ -1,14 +1,13 @@
-"""Static dependency evidence plus bounded, source-checked Codex review."""
+"""Static dependency evidence plus bounded, source-checked AI review."""
 import ast
 from collections import Counter, defaultdict, deque
 import hashlib
 import json
-import os
 from pathlib import PurePosixPath
 import posixpath
 import re
 import warnings
-from . import codex_provider
+from . import ai_provider
 from .review_source import requirements_file
 from .review_context import collect_context, excerpt
 from .review_evidence import ReviewEvidence
@@ -641,11 +640,8 @@ def analyze(snapshot, rules="", *, progress=None, cache_dir=None, max_workers=4,
         coverage["saved_source_review"] = True
         batch_findings[len(contexts)] = list(revalidate_saved_findings(saved_source_review, snapshot, rules, source_evidence))
     try:
-        ready = codex_provider.status()
-        if not ready["ready"] or "ChatGPT" not in ready["label"]:
-            raise ValueError("기존 ChatGPT 로그인으로 Codex에 연결해 주세요: codex login. API 과금으로 자동 전환하지 않아요.")
         summaries = {}
-        policy = [VERSION, os.getenv('CODEX_MODEL', ''), INSTRUCTIONS, REVIEW_SCHEMA]
+        policy = [VERSION, ai_provider.model_identity(), INSTRUCTIONS, REVIEW_SCHEMA]
         cache = ReviewCache(cache_dir, policy) if cache_dir is not None else None
         for index, context in enumerate(contexts, 1):
             context['batch'] = {'index':index, 'total':total_batches, 'all_view_count':len(views)}
@@ -655,7 +651,7 @@ def analyze(snapshot, rules="", *, progress=None, cache_dir=None, max_workers=4,
                 progress('thinking', f"분석 중 · {percent}%")
         report()
         def generate(context):
-            return codex_provider.generate(context, instructions=INSTRUCTIONS, output_schema=REVIEW_SCHEMA, timeout=180)
+            return ai_provider.generate(context, instructions=INSTRUCTIONS, output_schema=REVIEW_SCHEMA, timeout=180)
         for index, response, reused, error in review_batches(contexts, generate, cache=cache, max_workers=max_workers):
             if error:
                 result['ai_error'] = result['ai_error'] or error

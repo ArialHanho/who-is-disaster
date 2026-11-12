@@ -6,7 +6,7 @@ import re
 import subprocess
 import threading
 import time
-from . import github_account as gh, codex_provider
+from . import ai_provider, github_account as gh
 from .review_source import github_origin, redact
 
 FAILED = {"failure", "timed_out", "action_required", "startup_failure"}
@@ -99,19 +99,20 @@ def diagnose(run, *, use_ai=True):
     if not use_ai:
         return result
     try:
-        ready = codex_provider.status()
-        if not ready["ready"] or "ChatGPT" not in ready["label"]: return result
-        reply = codex_provider.generate({"workflow": run["name"], "workflow_conclusion": run["conclusion"], "commit": run["head_sha"], "jobs": [
-            {"id": j["id"], "name": j["name"], "steps": j["steps"], "log": j.get("log", "")[:8000]} for j in failures[:4]]},
+        supplied = {j["id"]: j.get("log", "")[-8000:] for j in failures[:4]}
+        reply = ai_provider.generate({"workflow": run["name"], "workflow_conclusion": run["conclusion"], "commit": run["head_sha"], "jobs": [
+            {"id": j["id"], "name": j["name"], "steps": j["steps"], "log": supplied[j["id"]]} for j in failures[:4]]},
             instructions=DIAG_INSTRUCTIONS, output_schema=DIAG_SCHEMA, timeout=120)["result"]
         evidence = reply.get("evidence", [])
-        supplied = {j["id"]: j.get("log", "")[:8000] for j in failures[:4]}
         valid = isinstance(evidence, list) and 0 < len(evidence) <= 4
         valid = valid and all(isinstance(e, dict) and type(e.get("job_id")) is int and isinstance(e.get("quote"), str)
             and 0 < len(e["quote"].strip()) <= 500 and e["quote"] in supplied.get(e["job_id"], "") for e in evidence)
         if valid and all(isinstance(reply.get(k), str) and reply[k].strip() for k in ("cause", "instruction")):
-            result = {"cause": reply["cause"][:2000], "instruction": reply["instruction"][:5000], "evidence": evidence, "method": "codex"}
-    except (ValueError, OSError, KeyError, TypeError):
+            return {"cause": reply["cause"][:2000], "instruction": reply["instruction"][:5000], "evidence": evidence, "method": "ai"}
+        result["ai_error"] = "로그 근거가 부족해 실패 원인을 확정하지 못했어요."
+    except ValueError as exc:
+        result["ai_error"] = str(exc)
+    except (OSError, KeyError, TypeError):
         result["ai_error"] = "AI 원인 분석을 마치지 못했어요. 확인된 실패 단계와 로그를 먼저 표시해요."
     return result
 
@@ -142,7 +143,7 @@ def test_summary(runs):
     return "테스트 단계 식별 안 됨"
 
 
-def collect(source, targets, previous=None, *, force=False, progress=None, diagnose_failures=True):
+def collect(source, targets, previous=None, *, force=False, progress=None, diagnose_failures=True, diagnosis_run_id=None):
     name = github_origin(source).removeprefix("https://github.com/")
     report = {"checked": time.time(), "repository": name, "targets": targets, "commits": {}, "error": ""}
     if not report["repository"]:
@@ -167,8 +168,10 @@ def collect(source, targets, previous=None, *, force=False, progress=None, diagn
                 run["name"] = run["name"] or "워크플로"
                 run.update(attempt=int(row.get("run_attempt", 1)), url=f"https://github.com/{report['repository']}/actions/runs/{row['id']}", jobs=[])
                 cached = old_runs.get(run["id"], {})
-                if not force and cached.get("status") == "completed" and all(cached.get(k) == run[k] for k in ("attempt", "updated_at", "conclusion")) and not cached.get("jobs_error") and not any(j.get("log_error") for j in cached.get("jobs", [])) and not cached.get("diagnosis", {}).get("ai_error"):
-                    run = cached
+                if (not force and cached.get("status") == "completed" and cached.get("jobs_complete", True)
+                        and all(cached.get(k) == run[k] for k in ("attempt", "updated_at", "conclusion"))
+                        and not cached.get("jobs_error") and not any(j.get("log_error") for j in cached.get("jobs", []))):
+                    run = dict(cached)
                 else:
                     try:
                         jobs, run["jobs_complete"] = pages(report["repository"], f"runs/{run['id']}/attempts/{run['attempt']}/jobs", "jobs")
@@ -183,9 +186,11 @@ def collect(source, targets, previous=None, *, force=False, progress=None, diagn
                         run["log_coverage"] = f"{sum(bool(j.get('log')) for j in failing)}/{len(failing)}"
                     except (ValueError, OSError) as exc:
                         run["jobs_error"] = str(exc)
-                    if needs_attention(run):
-                        if progress: progress("thinking", run["name"] + " 실패 원인을 분석하고 있어요")
-                        run["diagnosis"] = diagnose(run) if diagnose_failures else diagnose(run, use_ai=False)
+                diagnosis = run.get("diagnosis")
+                use_ai = diagnose_failures and (diagnosis_run_id is None or run["id"] == diagnosis_run_id)
+                if needs_attention(run) and (not diagnosis or use_ai and diagnosis.get("method") == "steps"):
+                    if progress and use_ai: progress("thinking", run["name"] + " 실패 원인을 분석하고 있어요")
+                    run["diagnosis"] = diagnose(run, use_ai=use_ai)
                 runs.append(run)
             report["commits"][head] = {"state": aggregate(runs, complete), "runs": runs, "complete": complete, "tests": test_summary(runs)}
     except (ValueError, OSError, KeyError, TypeError) as exc:

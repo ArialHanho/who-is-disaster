@@ -2,7 +2,6 @@
 from contextlib import contextmanager
 import hashlib
 import json
-import os
 from pathlib import Path
 import sqlite3
 import time
@@ -12,7 +11,7 @@ from .review_parallel import parse_targets, capture, compose, sources_metadata
 from .review_followup import verify, tracking, check_result, recover_integrated_views, SourceIndexes
 from .review_catalog import branches
 from .review_revision import captured_token, excluded_branches, included_branches, included_pulls, worktree_exclusions
-from . import github_account
+from . import ai_provider, github_account
 from .github_actions import collect as collect_actions, failed_runs
 from .review_authors import AuthorLookup
 
@@ -193,7 +192,7 @@ class ReviewService:
             row = db.execute("SELECT payload FROM ci_reports WHERE repo_id=?", (repo_id,)).fetchone()
             return json.loads(row[0]) if row else {}
 
-    def refresh_actions(self, repo_id, targets=None, *, force=False, progress=None, on_demand=False):
+    def refresh_actions(self, repo_id, targets=None, *, force=False, progress=None, on_demand=False, diagnosis_run_id=None):
         repo, previous = self.repo(repo_id), self.actions_report(repo_id)
         targets = previous.get("targets", []) if targets is None else targets
         if not targets:
@@ -201,7 +200,7 @@ class ReviewService:
         options = {"force": force}
         if progress: options["progress"] = progress
         if on_demand and self.actions_collector is collect_actions:
-            options["diagnose_failures"] = False
+            options.update(diagnose_failures=diagnosis_run_id is not None, diagnosis_run_id=diagnosis_run_id)
         report = self.actions_collector(repo["source"], targets, previous, **options)
         error = report.get("error", "")
         with self.db() as db:
@@ -270,7 +269,7 @@ class ReviewService:
                 snapshot = self.source.prepare(repo["source"], repo["branch"])
                 revision = snapshot["head"]
             pull_revisions = sorted((p['number'], p['head'], p['base']) for p in pulls)
-            inputs = [revision, pull_revisions, repo["rules"], os.getenv("CODEX_MODEL", "")]
+            inputs = [revision, pull_revisions, repo["rules"], ai_provider.model_identity()]
             signature = hashlib.sha256(json.dumps([*inputs, VERSION], sort_keys=True).encode()).hexdigest()
             selection = {"all_branches": bool(repo["all_branches"]), "open_prs": bool(repo["open_prs"]),
                          "branches": len(included_branches(repo, catalog)) if catalog else 0,

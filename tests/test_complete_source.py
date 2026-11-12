@@ -15,8 +15,8 @@ class CompleteSourceTests(unittest.TestCase):
         saved = {"coverage": {"source_files": 1, "source_versions": 1, "source_chunks": 1, "source_pass_batches": 1},
                  "findings": []}
         response = {"result": {"summary": "", "findings": []}, "usage": {}}
-        with patch("agent_app.review_analysis.codex_provider.status", return_value={"ready": True, "label": "ChatGPT"}), \
-                patch("agent_app.review_analysis.codex_provider.generate", return_value=response) as generate:
+        with patch("agent_app.review_analysis.ai_provider.status", return_value={"ready": True, "label": "ChatGPT"}), \
+                patch("agent_app.review_analysis.ai_provider.generate", return_value=response) as generate:
             result = analyze(data, saved_source_review=saved)
         self.assertTrue(result["coverage"]["full_source_review"])
         self.assertTrue(result["coverage"]["saved_source_review"])
@@ -32,8 +32,8 @@ class CompleteSourceTests(unittest.TestCase):
         def generate(context, **kwargs):
             calls.append(context)
             return {"result": {"summary": "", "findings": []}, "usage": {}}
-        with tempfile.TemporaryDirectory() as temp, patch("agent_app.review_analysis.codex_provider.status",
-                return_value={"ready": True, "label": "ChatGPT"}), patch("agent_app.review_analysis.codex_provider.generate", side_effect=generate):
+        with tempfile.TemporaryDirectory() as temp, patch("agent_app.review_analysis.ai_provider.status",
+                return_value={"ready": True, "label": "ChatGPT"}), patch("agent_app.review_analysis.ai_provider.generate", side_effect=generate):
             first = analyze(data, cache_dir=temp)
             calls.clear()
             changed = snapshot({**files, "docs/notes.md": "Expanded notes\n" * 1500}, changed=["docs/notes.md"], head="c" * 40)
@@ -50,8 +50,8 @@ class CompleteSourceTests(unittest.TestCase):
         def generate(context, **kwargs):
             calls.append(context)
             return {'result': {'summary':'검토 완료', 'findings':[]}, 'usage':{}}
-        with tempfile.TemporaryDirectory() as temp, patch('agent_app.review_analysis.codex_provider.status',
-                return_value={'ready':True, 'label':'ChatGPT'}), patch('agent_app.review_analysis.codex_provider.generate', side_effect=generate):
+        with tempfile.TemporaryDirectory() as temp, patch('agent_app.review_analysis.ai_provider.status',
+                return_value={'ready':True, 'label':'ChatGPT'}), patch('agent_app.review_analysis.ai_provider.generate', side_effect=generate):
             first = analyze(data, cache_dir=temp)
             calls.clear()
             data = {**data, 'head':'c'*40, 'base':data['head'], 'changed':['module050.py'],
@@ -126,7 +126,7 @@ class CompleteSourceTests(unittest.TestCase):
             calls.append(context)
             if len(calls)==2:raise ValueError('fixture limit')
             return {'result':{'findings':[],'summary':'검토 완료'},'usage':{}}
-        with patch('agent_app.review_analysis.codex_provider.status',return_value={'ready':True,'label':'ChatGPT'}), patch('agent_app.review_analysis.codex_provider.generate',side_effect=generate):
+        with patch('agent_app.review_analysis.ai_provider.status',return_value={'ready':True,'label':'ChatGPT'}), patch('agent_app.review_analysis.ai_provider.generate',side_effect=generate):
             updates=[]
             result=analyze(data,max_workers=1,progress=lambda stage,text:updates.append(text))
         self.assertFalse(result['coverage']['full_source_review'])

@@ -192,7 +192,7 @@ class ParallelTests(unittest.TestCase):
         def generate(context, *args, **kwargs):
             contexts.append(context)
             return {"result": {"summary": "검토 완료", "findings": []}, "usage": {"input_tokens": 10}}
-        with patch("agent_app.review_analysis.codex_provider.status", return_value={"ready": True, "label": "ChatGPT"}), patch("agent_app.review_analysis.codex_provider.generate", side_effect=generate):
+        with patch("agent_app.review_analysis.ai_provider.status", return_value={"ready": True, "label": "ChatGPT"}), patch("agent_app.review_analysis.ai_provider.generate", side_effect=generate):
             result = analyze(data)
         self.assertEqual(result["ai_error"], "")
         self.assertEqual(len([c for c in contexts if 'review_pass' not in c]), 2)

@@ -17,7 +17,7 @@ flowchart LR
 - `review_analysis`, `review_context`, `review_evidence`, `review_batches`: 전체 정적 분석, 문맥 수집, 원문과 Python 호출 근거 검사, 소스 분할 전달
 - `review_followup`, `review_changes`, `review_authors`: 수정 재확인, 변경 이력, 작성자와 수정자 구분
 - `review_service`: SQLite 기록, 캐시, 분석 상태와 중복 알림 억제
-- `codex_provider`: 기존 CLI 로그인, 빈 작업 디렉터리, 도구를 제한한 구조화 응답
+- `ai_provider`, `codex_provider`: 선택한 공식 CLI의 구독 로그인, 빈 작업 디렉터리, 도구를 제한한 구조화 응답
 - `review_ui`, `review_bubble`, `typing_label`: 브리핑과 작은 말풍선, 문장 줄바꿈
 - `character`, `skin`, `portrait_motion`, `sprite_raster`: 캐릭터 입력, 팩, 동작과 표시 픽셀 캐시
 - `review_watch`, `review_schedule`, `review_revision`: 변경 감지, 연속 푸시 병합, 재시도 간격, 실제 수집 상태의 완료 기록
@@ -44,13 +44,13 @@ Python AST와 JS/TS 정적 상대경로 import를 분석합니다. 다른 지원
 
 ## 안전한 작업 경계
 
-대상 코드를 checkout·실행하지 않습니다. 사용자 작업트리·index·브랜치를 수정하지 않고, 임시 Git 객체 공간에만 가상 통합을 만듭니다. 외부 diff·hook·filter·merge driver는 실행하지 않습니다. Codex 결과는 실제 원문의 행과 인용을 대조합니다.
+대상 코드를 checkout·실행하지 않습니다. 사용자 작업트리·index·브랜치를 수정하지 않고, 임시 Git 객체 공간에만 가상 통합을 만듭니다. 외부 diff·hook·filter·merge driver는 실행하지 않습니다. AI 검토 결과는 실제 원문의 행과 인용을 대조합니다.
 
 문제 상세에서 요청하면 GitHub Actions를 관련 커밋의 SHA로 조회합니다. 코드를 비교해 확인한 해결 상태와 기존 실행의 결과를 표시합니다. 가상 통합본과 미커밋 코드는 미실행으로 표시합니다.
 
 ## 재시도와 로컬 캐시
 
-새로 발견한 문제는 기존 이슈의 수정 재확인 전에 브리핑에 기록합니다. 수정 재확인에서는 한 스냅샷의 의존성과 소스 해시를 재사용하고, 근거 파일과 직접 연결된 코드가 바뀐 문제를 비교합니다. 확인 완료 응답은 `followup-cache`에서 같은 입력에 재사용합니다. 시간 초과가 발생한 묶음은 개별 항목으로 나눕니다.
+새로 발견한 문제는 기존 이슈의 수정 재확인 전에 브리핑에 기록합니다. 재확인에서 AI가 필요할 때는 선택한 AI의 새 세션에서 이전 판단과 현재 코드의 반례를 대조합니다. 같은 AI·모델·자료의 응답은 로컬에서 재사용합니다. 시간 초과가 발생한 재확인 묶음은 개별 항목으로 나눕니다.
 
 완료한 응답은 `.data/code/review-cache`에 저장합니다. 변경 비교는 커밋·PR·diff가 같은 요청을 재사용합니다. 전체 소스 묶음은 코드와 문서를 별도로 구성하고, 묶음의 내용·관련 의존 파일·저장소 루트의 요구사항 문서·검토 규칙을 기준으로 재사용합니다. 캐시는 모델과 지침에도 연결되며 7일간 사용합니다. 재사용한 응답의 근거도 현재 원문과 대조합니다.
 

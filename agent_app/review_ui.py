@@ -8,12 +8,12 @@ from datetime import datetime
 from PySide6.QtCore import Qt, QTimer, QThreadPool, QUrl
 from PySide6.QtGui import QIcon, QPixmap, QDesktopServices, QPainterPath, QRegion
 from PySide6.QtWidgets import (QApplication, QWidget, QFrame, QVBoxLayout, QHBoxLayout,
-    QPlainTextEdit, QLineEdit, QCheckBox, QFileDialog, QSystemTrayIcon,
+    QPlainTextEdit, QLineEdit, QCheckBox, QComboBox, QFileDialog, QSystemTrayIcon,
     QMenu, QListWidget, QListWidgetItem, QAbstractItemView, QSizePolicy, QLayout, QProgressBar, QLabel)
 from .character import DesktopCharacter
 from .background import Worker
 from .settings import load_env
-from . import codex_provider
+from . import ai_provider
 from . import APP_NAME, __version__
 from .review_analysis import CATEGORIES, repair_prompt, batch_repair_prompt
 from .review_source import normalize_source
@@ -115,7 +115,7 @@ class RepoDialog(RoundedDialog):
         self.auto.setChecked(bool(repo["auto"]) if repo else True)
         layout.addWidget(self.auto)
         layout.addWidget(label("로컬 Git 변경은 바로 감지해요. GitHub 연결은 새 커밋·PR 여부만 가볍게 확인하고, 달라졌을 때 분석해요. 저장만 한 미커밋 변경은 ‘지금 분석’으로 확인할 수 있어요.", 12, MUTED))
-        layout.addWidget(label("기존 Codex 로그인과 구독 한도를 사용해요. 바뀐 코드가 없으면 AI를 다시 부르지 않아요.", 12, MUTED))
+        layout.addWidget(label("설정에서 고른 AI 계정의 사용 한도를 사용해요.", 12, MUTED))
         layout.addStretch()
         self.footer = QFrame()
         self.footer.setObjectName('footer')
@@ -383,7 +383,7 @@ class ReviewPanel(RoundedSurface):
         self.changed_repos = set()
         self.workers, self.queue, self.expanded = [], [], set()
         self.rendered_page, self.render_generation = None, 0
-        self.model_draft = None
+        self.provider_draft = self.model_draft = None
         self.latest_bubble_message, self.current_finding = "", None
         self.progress_text = "분석 준비 중이에요"
         self.settings_path = self.root / ".data/code/settings.json"
@@ -391,10 +391,10 @@ class ReviewPanel(RoundedSurface):
         self.setAcceptDrops(True)
         try:
             settings = json.loads(self.settings_path.read_text(encoding="utf-8"))
-            # Old single-repository selection becomes an all-repositories briefing.
             self.repo_id = settings.get("repo_filter")
-            os.environ["CODEX_MODEL"] = settings.get("model", os.getenv("CODEX_MODEL", ""))
-        except (OSError, ValueError):
+            provider, model = ai_provider.selection()
+            ai_provider.select(settings.get("provider", provider), settings.get("model", model))
+        except (OSError, ValueError, AttributeError):
             pass
         self.setObjectName("popover")
         self.setWindowTitle("Who is disaster · 코드 브리핑")
@@ -486,7 +486,9 @@ class ReviewPanel(RoundedSurface):
         bar.setValue(min(bar.maximum(), bar.value()+max(80, bar.pageStep()-36)))
 
     def save_settings(self):
-        self.settings_path.write_text(json.dumps({"repo_filter": self.repo_id, "model": os.getenv("CODEX_MODEL", "")}, ensure_ascii=False), encoding="utf-8")
+        from .review_process import write_json
+        provider, model = ai_provider.selection()
+        write_json(self.settings_path, {"repo_filter": self.repo_id, "provider": provider, "model": model})
 
     def reload_repos(self):
         if self.repo_id not in {r["id"] for r in self.service.repos()}:
@@ -532,11 +534,10 @@ class ReviewPanel(RoundedSurface):
         self.scan.setEnabled(bool(repos) and not self.busy)
         self.scan.setText("분석 중" if self.busy else "지금 분석")
         self.progress_bar.setVisible(self.busy)
-        self.connect_bar.setVisible(self.page in {"repos", "settings"} or not repos)
+        self.connect_bar.setVisible(self.page == "repos" or (self.page == "brief" and not repos))
         for b in self.connect_buttons: b.setEnabled(not self.busy)
         if self.page == "settings" and self.rendered_page == "settings":
-            self.model_save.setEnabled(not self.busy)
-            self.model_save.setToolTip("현재 분석이 끝나면 저장할 수 있어요" if self.busy else "")
+            self.model_save.setEnabled(not (self.busy or self.actions_pending))
         if not self.busy:
             self.subtitle.setText(f"저장소 {len(repos)}곳")
         if self.sprite: self.sprite.bubble.sync_actions()
@@ -848,6 +849,7 @@ class ReviewPanel(RoundedSurface):
             return
         report = self.service.actions_report(repo["id"])
         available = report.get("commits", {})
+        pending = repo["id"] in self.actions_pending
         if report.get("error"):
             layout.addWidget(label(report["error"], 12, MUTED))
         else:
@@ -865,22 +867,29 @@ class ReviewPanel(RoundedSurface):
                 layout.addWidget(label(f'{target["label"]} · {head[:8]} · {state}{test_result}', 12, MUTED))
                 failure = next((run for run in commit.get("runs", ()) if needs_attention(run)), None)
                 if failure:
-                    detail = failure.get("diagnosis", {}).get("cause")
+                    diagnosis = failure.get("diagnosis", {})
+                    detail = diagnosis.get("cause")
                     if detail:
                         layout.addWidget(label(detail, 12))
                     layout.addWidget(button("실패 실행 보기", lambda run=failure: QDesktopServices.openUrl(QUrl(run["url"])), role="chip"))
                     layout.addWidget(button("테스트 수정 지시문 복사", lambda run=failure: QApplication.clipboard().setText(repair_instruction(report, run)), role="chip"))
-        pending = repo["id"] in self.actions_pending
+                    if diagnosis.get("ai_error"):
+                        layout.addWidget(label(diagnosis["ai_error"], 12, MUTED))
+                    if diagnosis.get("method") == "steps" and diagnosis.get("evidence"):
+                        explain = button("AI로 실패 원인 확인",
+                            lambda t=target, rid=failure["id"]: self.load_actions(repo["id"], [t], diagnosis_run_id=rid), role="chip")
+                        explain.setEnabled(not (pending or self.busy))
+                        layout.addWidget(explain)
         text = "검사 결과를 가져오고 있어요" if pending else "GitHub 검사 결과 보기"
         lookup = button(text, lambda: self.load_actions(repo["id"], targets), role="chip")
         lookup.setEnabled(not pending)
         layout.addWidget(lookup)
 
-    def load_actions(self, repo_id, targets):
+    def load_actions(self, repo_id, targets, *, diagnosis_run_id=None):
         if repo_id in self.actions_pending:
             return
         self.actions_pending.add(repo_id)
-        worker = Worker(lambda: self.service.refresh_actions(repo_id, targets, on_demand=True))
+        worker = Worker(lambda: self.service.refresh_actions(repo_id, targets, on_demand=True, diagnosis_run_id=diagnosis_run_id))
         self.workers.append(worker)
         def finished():
             self.actions_pending.discard(repo_id)
@@ -1080,6 +1089,7 @@ class ReviewPanel(RoundedSurface):
             QTimer.singleShot(0, self.tick)
 
     def settings_content(self):
+        self.ai_settings_content()
         self.cards.addWidget(label("비서 설정", 15, BROWN, True))
         if os.name == 'nt':
             from . import startup
@@ -1100,36 +1110,71 @@ class ReviewPanel(RoundedSurface):
         self.cards.addWidget(label("캐릭터를 숨기면 화면 가장자리에 ‘비서 열기’ 탭이 남아요. 트레이에서도 다시 열 수 있어요.", 12, MUTED))
         self.card('기타 연결','대기 중 가벼운 한마디와 현재 위치 날씨를 골라 켤 수 있어요.')
         self.cards.addWidget(button('기타 연결',self.other_connections))
-        self.card("GitHub 저장소 연결", "로그인 후 저장소를 고르면 전체 브랜치와 열린 PR을 함께 봐요. 저장소 설정에서 변경 시 자동 점검을 켤 수 있어요.")
-        self.cards.addWidget(button("GitHub 계정·저장소", self.add_repo))
-        self.card("기존 Codex 로그인으로", "분석할 때 계정의 Codex 사용량이 소모돼요. 모델을 비우면 현재 Codex 기본 모델을 사용해요. 같은 코드의 분석 결과는 재사용해요.")
-        choice = QLineEdit(self.model_draft if self.model_draft is not None else os.getenv("CODEX_MODEL", ""))
+        self.cards.addWidget(label("자동 점검과 미커밋 포함 여부는 저장소별 설정에서 바꿀 수 있어요.", 12, MUTED))
+
+    def ai_settings_content(self):
+        self.cards.addWidget(label("분석 AI", 15, BROWN, True))
+        saved_provider, saved_model = ai_provider.selection()
+        provider = QComboBox()
+        provider.setObjectName("providerChoice")
+        for key, name in ai_provider.PROVIDERS.items():
+            provider.addItem(name, key)
+        provider.setCurrentIndex(provider.findData(self.provider_draft or saved_provider))
+        self.cards.addWidget(provider)
+        choice = QLineEdit(self.model_draft if self.model_draft is not None else saved_model)
         choice.setObjectName("modelChoice")
+        choice.setAccessibleName("모델 이름")
         choice.setMaxLength(100)
         choice.textChanged.connect(lambda text:setattr(self, "model_draft", text))
-        choice.setPlaceholderText("Codex 기본 모델")
+        choice.setPlaceholderText("기본 모델 사용")
         self.cards.addWidget(choice)
+        def change_provider():
+            self.provider_draft = provider.currentData()
+            current_provider, current_model = ai_provider.selection()
+            choice.setText(current_model if self.provider_draft == current_provider else "")
+        provider.currentIndexChanged.connect(change_provider)
         def save():
-            os.environ["CODEX_MODEL"] = choice.text().strip()[:100]
-            self.model_draft = os.environ["CODEX_MODEL"]
+            previous = ai_provider.selection()
+            try:
+                ai_provider.select(provider.currentData(), choice.text())
+                self.save_settings()
+            except ValueError as exc:
+                self.status.setText(str(exc))
+                return
+            except OSError:
+                ai_provider.select(*previous)
+                self.status.setText("AI 설정을 저장하지 못했어요.")
+                return
+            self.provider_draft, self.model_draft = ai_provider.selection()
             choice.setText(self.model_draft)
-            self.save_settings()
-            self.status.setText("모델 설정을 저장했어요.")
-        self.model_save = button("모델 설정 저장", save)
-        self.model_save.setEnabled(not self.busy)
-        self.model_save.setToolTip("현재 분석이 끝나면 저장할 수 있어요" if self.busy else "")
+            self.status.setText(f"{ai_provider.PROVIDERS[self.provider_draft]}로 분석해요.")
+        self.model_save = button("AI 설정 저장", save)
+        self.model_save.setEnabled(not (self.busy or self.actions_pending))
         self.cards.addWidget(self.model_save)
+        def login():
+            key = provider.currentData()
+            try:
+                ai_provider.start_login(key, self.root / ".data/ai-login")
+            except ValueError:
+                QDesktopServices.openUrl(QUrl(ai_provider.INSTALL_URLS[key]))
+                self.status.setText("공식 CLI를 설치한 뒤 다시 로그인해 주세요.")
+            except OSError:
+                self.status.setText("로그인 창을 열지 못했어요. CLI 설치 상태를 확인해 주세요.")
+            else:
+                self.status.setText("공식 CLI에서 로그인하고 연결을 확인해 주세요.")
         def connection():
+            key = provider.currentData()
             self.status.setText("연결을 확인하고 있어요…")
-            worker = Worker(lambda: codex_provider.status(refresh=True))
+            worker = Worker(lambda: ai_provider.status(refresh=True, provider=key))
             self.workers.append(worker)
             worker.signals.result.connect(lambda r:self.status.setText(r["label"] + " · " + r["message"]))
             worker.signals.error.connect(self.status.setText)
             worker.signals.finished.connect(lambda:self.workers.remove(worker) if worker in self.workers else None)
             QThreadPool.globalInstance().start(worker)
-        self.cards.addWidget(button("로그인 연결 확인", connection))
-        self.card("코드 문제에 집중", "코드 근거가 있는 문제만 알려드려요. 추가 판단이 필요한 항목은 검토 후보에 모으고, 수정 여부는 현재 코드로 확인해요.")
-        self.cards.addWidget(label("자동 점검과 미커밋 포함 여부는 저장소별 설정에서 바꿀 수 있어요.", 12, MUTED))
+        login_buttons = QHBoxLayout()
+        login_buttons.addWidget(button("공식 로그인", login))
+        login_buttons.addWidget(button("로그인 연결 확인", connection))
+        self.cards.addLayout(login_buttons)
 
     def ai_settings(self): self.open_tab("settings")
 

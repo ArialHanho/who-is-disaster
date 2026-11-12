@@ -47,7 +47,7 @@ class ActionsEvidenceTests(unittest.TestCase):
             return deepcopy(self.rows if field == "workflow_runs" else self.jobs), True
         self.patches = [patch.object(ci.gh, "signed_in", return_value=True), patch.object(ci, "pages", side_effect=pages),
                         patch.object(ci, "job_log", return_value=("TypeError: encode() missing required keyword-only argument: topic", False)),
-                        patch.object(ci.codex_provider, "status", return_value={"ready": False})]
+                        patch.object(ci.ai_provider, "status", return_value={"ready": False, "message": "테스트 연결 없음"})]
         for p in self.patches: p.start()
 
     def tearDown(self):
@@ -81,15 +81,28 @@ class ActionsEvidenceTests(unittest.TestCase):
         self.assertEqual(self.calls, ["runs?head_sha=" + HEAD])
 
     def test_ai_invented_log_is_rejected(self):
-        with patch.object(ci.codex_provider, "status", return_value={"ready": True, "label": "ChatGPT"}), patch.object(ci.codex_provider, "generate", return_value={"result": {
+        with patch.object(ci.ai_provider, "status", return_value={"ready": True, "label": "ChatGPT"}), patch.object(ci.ai_provider, "generate", return_value={"result": {
                 "cause": "invented", "instruction": "invented", "evidence": [{"job_id": 100, "quote": "not in logs"}]}}):
             run = self.collect()["commits"][HEAD]["runs"][0]
             self.assertEqual(run["diagnosis"]["method"], "steps")
 
+    def test_incomplete_jobs_are_refetched_and_only_requested_run_gets_ai_diagnosis(self):
+        self.rows += [{**raw_run(rid=11), "workflow_id": 10}]
+        report = ci.collect("https://github.com/example/app", TARGETS, diagnose_failures=False)
+        report["commits"][HEAD]["runs"][1]["jobs_complete"] = False
+        self.calls.clear()
+        with patch.object(ci.ai_provider, "generate", return_value={"result": {
+                "cause": "인자가 빠졌어요.", "instruction": "호출부를 확인해 주세요.",
+                "evidence": [{"job_id": 100, "quote": "TypeError"}]}}) as generate:
+            runs = ci.collect("https://github.com/example/app", TARGETS, report, diagnosis_run_id=10)["commits"][HEAD]["runs"]
+        self.assertEqual(self.calls, ["runs?head_sha=" + HEAD, "runs/10/attempts/1/jobs"])
+        generate.assert_called_once()
+        self.assertEqual({r["id"]: r["diagnosis"]["method"] for r in runs}, {10: "ai", 11: "steps"})
+
     def test_issue_card_fetches_the_reviewed_commit_only_when_clicked(self):
         app = qt_app()
         with tempfile.TemporaryDirectory() as temp, patch("agent_app.finding_history_ui.FindingHistory.load", lambda self: None), \
-                patch.object(ci.codex_provider, "generate") as generate:
+                patch.object(ci.ai_provider, "generate") as generate:
             service = ReviewService(Path(temp) / "db")
             rid = service.save_repo("example/app")
             service.record(service.repo(rid), snapshot({"app.py": "value = 1\n"}, head=HEAD), "fixture", {"findings": [finding()]})
