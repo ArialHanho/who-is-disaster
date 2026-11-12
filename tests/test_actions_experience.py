@@ -225,9 +225,13 @@ class ResidentExperienceTests(unittest.TestCase):
             finally:
                 if child.poll() is None: child.kill(); child.wait()
                 first.close()
+                first.deleteLater()
         replacement = SingleInstance(name)
         self.assertTrue(replacement.primary)
         replacement.close()
+        replacement.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        self.app.processEvents()
 
     def test_restore_does_not_toggle_or_overlap_panel_and_details_close_first(self):
         # Navigation is independent of the asynchronous Git history service.
@@ -238,6 +242,7 @@ class ResidentExperienceTests(unittest.TestCase):
             panel = ReviewPanel(temp, service)
             panel.timer.stop()
             sprite = DesktopCharacter(CONFIG, Path(temp), panel)
+            sprite.timer.stop()
             panel.sprite = sprite
             try:
                 sprite.open_panel()
