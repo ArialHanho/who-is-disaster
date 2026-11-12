@@ -2,6 +2,7 @@
 import json
 from bisect import bisect_right
 from itertools import accumulate
+from pathlib import Path
 from PySide6.QtGui import QMovie, QPixmap
 
 
@@ -147,10 +148,14 @@ class AnimationSet:
 
 def selected_skin(root, repaint, preferences):
     from .character_settings import pack_path
-    path = pack_path(root, preferences["character"])
+    key = preferences["character"]
+    path = (Path(__file__).resolve().parents[1] / "assets/character/ember-fox.json"
+            if key == "ember_fox" else pack_path(root, key))
     base = path.parent if path else root
     skin = AnimationSet(base, repaint, path, motion=not preferences["reduced_motion"])
-    if preferences["character"] not in {"legacy"} and not path:
+    if key == "ember_fox":
+        skin.continuous_motion = True
+    elif key != "legacy" and not path:
         skin.animations = {}
     if skin.pose_motion:
         skin.prepare_poses()

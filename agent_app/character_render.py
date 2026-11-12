@@ -67,6 +67,8 @@ def draw_character(p, config, frame, state, *, style="fox", custom=None, look=(0
                     draw_sprite(overlay,rect,source)
                 overlay.end()
                 p.drawImage(target.topLeft(),blend)
+        elif style == "ember_fox":
+            draw_sprite(p, target, custom)
         else:
             p.drawPixmap(target, custom, QRectF(custom.rect()))
     else:
@@ -146,6 +148,18 @@ def draw_character(p, config, frame, state, *, style="fox", custom=None, look=(0
     elif state == "organizing":
         p.setPen(QPen(QColor("#8a6750"), 3))
         p.drawLine(QPointF(78,119), QPointF(97+(math.sin(frame)*3 if motion else 0),101))
+    elif state == "attention" and style == "ember_fox":
+        p.setPen(QPen(ink, 2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawArc(QRectF(120, 45, 12, 12), 15*16, 150*16)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(ink)
+        p.drawRoundedRect(QRectF(120, 52, 7, 7), 2, 2)
+        p.drawEllipse(QRectF(111, 55, 21, 21))
+        p.setBrush(QColor("#e9965b"))
+        p.drawEllipse(QRectF(129, 43, 6, 6))
+        p.setBrush(QColor("#fff6de"))
+        p.drawEllipse(QRectF(115, 59, 5, 4))
     elif state in {"success", "attention", "error", "happy"}:
         p.setPen(QPen(QColor("#b75f4b") if state == "error" else QColor("#b78d39"), 2.5))
         if state == "success":

@@ -202,14 +202,27 @@ class ReviewService:
         if on_demand and self.actions_collector is collect_actions:
             options["diagnose_failures"] = False
         report = self.actions_collector(repo["source"], targets, previous, **options)
+        error = report.get("error", "")
         with self.db() as db:
+            if on_demand:
+                # Keep other cards' results and invalidate failed lookups only for the requested commits.
+                db.execute("BEGIN IMMEDIATE")
+                row = db.execute("SELECT payload FROM ci_reports WHERE repo_id=?", (repo_id,)).fetchone()
+                saved = json.loads(row[0]) if row else {}
+                requested = {target["head"] for target in targets}
+                fetched = report.get("commits", {})
+                commits = {head: entry for head, entry in saved.get("commits", {}).items() if head not in requested}
+                errors = {head: reason for head, reason in saved.get("lookup_errors", {}).items() if head not in requested}
+                if error:
+                    errors.update({head: error for head in requested - fetched.keys()})
+                report = {**report, "commits": {**commits, **fetched}, "lookup_errors": errors, "error": ""}
             db.execute("INSERT INTO ci_reports VALUES(?,?) ON CONFLICT(repo_id) DO UPDATE SET payload=excluded.payload",
                        (repo_id, json.dumps(report, ensure_ascii=False)))
             if not on_demand:
                 for run in failed_runs(report):
                     db.execute("INSERT OR IGNORE INTO ci_notices(repo_id,run_id,attempt) VALUES(?,?,?)", (repo_id, run["id"], run["attempt"]))
                 db.execute("DELETE FROM ci_notices WHERE repo_id=? AND run_id NOT IN (SELECT run_id FROM ci_notices WHERE repo_id=? ORDER BY run_id DESC LIMIT 500)", (repo_id, repo_id))
-        return {"repo_id": repo_id, "ci_only": True, "ci_error": report.get("error", "")}
+        return {"repo_id": repo_id, "ci_only": True, "ci_error": error}
 
     def mark_read(self, finding_id):
         with self.db() as db:
@@ -240,7 +253,7 @@ class ReviewService:
                                              + [t for t in targets if t.startswith("pr:")]))
             else:
                 targets = [t for t in targets if t not in excluded]
-            pulls = included_pulls(repo, catalog.get("pulls", []))
+            pulls = included_pulls(repo, catalog.get("pulls", []), catalog.get("default", ""))
             if repo["open_prs"]:
                 targets = [t for t in targets if not t.startswith("pr:")] + [f"pr:{p['number']}" for p in pulls]
             parallel = bool(targets or repo["include_working"])

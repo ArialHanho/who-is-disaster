@@ -33,8 +33,9 @@ class CharacterPreview(QWidget):
         if not self.isVisible(): return
         self.frame += dt*10
         if self.skin.continuous_motion:
+            expressive = self.skin.pose_motion or self.preferences["character"] == "ember_fox"
             self.pose = (self.gesture_motion.step(dt, held=True, moving=True, reduced=self.preferences['reduced_motion'])
-                         if self.state == 'dragging' else self.motion.step(dt, self.state, expressive=self.skin.pose_motion))
+                         if self.state == 'dragging' else self.motion.step(dt, self.state, expressive=expressive))
         self.update()
 
     def change(self, preferences):

@@ -1,0 +1,14 @@
+Required Notice: Copyright (c) 2026 ArialHanho (https://github.com/ArialHanho)
+
+Who is disaster
+
+이 프로젝트의 독자 소프트웨어와 문서는 LICENSE의 PolyForm Noncommercial License 1.0.0에 따릅니다.
+상업적 이용에는 권리자 ArialHanho의 별도 사전 서면 허락이 필요합니다.
+문의: https://github.com/ArialHanho/who-is-disaster/issues/new
+
+The original project software and documentation are licensed under the
+PolyForm Noncommercial License 1.0.0 in LICENSE. Commercial use requires
+separate prior written permission from the rights holder, ArialHanho.
+
+Third-party components retain their own terms. See PROVENANCE.md,
+licenses/POPME-MIT.txt, and assets/fonts/Jua-OFL.txt.

@@ -16,6 +16,7 @@ WizardStyle=modern
 OutputDir=..\dist\installer
 OutputBaseFilename=WhoIsDisaster-Setup-{#AppVersion}
 SetupIconFile=..\assets\icons\app.ico
+LicenseFile=..\LICENSE
 UninstallDisplayIcon={app}\CodeCompanion.exe
 Compression=lzma2/fast
 SolidCompression=yes
@@ -32,6 +33,9 @@ Name: "desktopicon"; Description: "바탕 화면 바로가기 만들기"; Flags:
 
 [Files]
 Source: "..\dist\CodeCompanion\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\NOTICE.txt"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\PROVENANCE.md"; DestDir: "{app}"; Flags: ignoreversion
 
 [InstallDelete]
 ; Version 0.2.0 accidentally collected incompatible Poppler ICU DLLs.

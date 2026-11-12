@@ -2,8 +2,37 @@
 from PySide6.QtCore import Qt, QTimer, QRectF
 from PySide6.QtGui import QPainter, QPainterPath, QPen, QColor
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QMenu
+from .review_analysis import CATEGORIES
 from .typing_label import TypingLabel, sentence_lines
 from .review_theme import STYLE, BROWN, MUTED, label, button, size_popup, RoundedSurface
+
+
+def short_text(text, length):
+    text = " ".join(text.split())
+    return text if len(text) <= length else text[:length - 1].rstrip() + "…"
+
+
+def issue_summary(findings, *, repository="", error=False):
+    problems = sum(f["severity"] == "problem" for f in findings)
+    warnings = len(findings) - problems
+    counts = [f"{label} {count}건" for label, count in (("문제", problems), ("경고", warnings)) if count]
+    lines = [short_text(repository, 20)] if repository else []
+    if counts:
+        lines.append(" · ".join(counts))
+    if error:
+        lines.append("분석 연결을 확인해 주세요.")
+    priority = sorted(findings, key=lambda f: (f["severity"] != "problem", -f["last_seen"]))
+    for finding in priority[:1 if error else 2]:
+        title = ("재발 · " if finding.get("reopened_count") else "") + finding["title"]
+        lines.append("• " + short_text(title, 32))
+        detail = CATEGORIES[finding["category"]]
+        evidence = finding["evidence"]
+        if evidence:
+            anchor = next((e for e in evidence if e.get("role") == "implementation"), evidence[0])
+            filename = anchor["path"].replace("\\", "/").rsplit("/", 1)[-1]
+            detail += f" · {short_text(filename, 18)}:{anchor['line']}"
+        lines.append("\u3000" + detail)
+    return "\n".join(lines)
 
 
 class ReviewBubble(RoundedSurface):
@@ -45,7 +74,7 @@ class ReviewBubble(RoundedSurface):
         self.chat_close.hide()
         message_row.addWidget(self.chat_close,0,Qt.AlignmentFlag.AlignTop)
         layout.addLayout(message_row)
-        self.overview = button('전체 문제 보기', lambda:self.open_details(all_repos=True), role='chip')
+        self.overview = button('전체 문제 보기', lambda: self.open_details(all_repos=self.mode != 'notice'), role='chip')
         layout.addWidget(self.overview)
         self.message.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.message.customContextMenuRequested.connect(lambda pos:self.show_chatter_menu(self.message.mapToGlobal(pos)))
@@ -93,13 +122,15 @@ class ReviewBubble(RoundedSurface):
             return
         panel.category = "all"
         panel.lifecycle = "active"
+        panel.finding_page = 0
+        panel.expanded.clear()
         panel.repo_id = self.target_repo if not all_repos and self.target_repo in {r["id"] for r in panel.service.repos()} else None
         panel.save_settings()
         panel.open_tab(self.target_page)
         self.character.open_panel()
 
     def compact(self):
-        return self.mode in {'chatter','greeting','interaction','progress'}
+        return self.mode in {'chatter', 'greeting', 'interaction', 'progress', 'summary', 'notice'}
 
     def sync_actions(self):
         self.shortcuts_row.setVisible(not self.compact() and not bool(self.character.panel.service.repos()))
@@ -119,10 +150,13 @@ class ReviewBubble(RoundedSurface):
         else:
             errors = sum(bool(r["error"]) for r in repos)
             unreviewed = sum(not bool(r["last_head"]) for r in repos)
-            issues = [f for r in repos for f in panel.service.findings(r['id']) if f['category'] != 'feature' and f['state']=='open' and f['confidence']=='high']
+            issues = [f for r in repos for f in panel.service.findings(r['id'], limit=None)
+                      if f['category'] != 'feature' and f['state'] == 'open' and f['confidence'] == 'high']
+            if issues:
+                self.show_message(issue_summary(issues, error=bool(errors)), mode="summary")
+                return
             if errors: text = f"연결·분석 확인이 필요한 저장소가 {errors}곳 있어요."
             elif unreviewed: text = f"아직 분석하지 않은 저장소가 {unreviewed}곳 있어요."
-            elif issues: text = f"확인할 코드 문제 {len(issues)}건이 있어요.\n" + issues[0]['title']
             else: text = self.character.dialogue.choose('quiet_greeting')
             self.show_message(text)
 
@@ -131,8 +165,8 @@ class ReviewBubble(RoundedSurface):
         self.expiry.stop()
         self.mode, self.target_repo, self.remaining_ms = mode, repo_id, auto_hide_ms
         chatting = self.compact()
-        self.overview.setText('브리핑 열기' if mode == 'progress' else '전체 문제 보기')
-        self.overview.setVisible(mode == 'progress' or mode in {'greeting', 'notice'} and bool(self.character.panel.service.repos()))
+        self.overview.setText({"progress": "브리핑 열기", "notice": "저장소 문제 보기"}.get(mode, "전체 문제 보기"))
+        self.overview.setVisible(mode in {'progress', 'summary', 'notice'} or mode == 'greeting' and bool(self.character.panel.service.repos()))
         self.details.setText("알림 보기" if mode == "notice" else "브리핑 열기")
         self.bubble_header.setVisible(not chatting)
         self.bubble_footer.setVisible(not chatting)
@@ -144,7 +178,8 @@ class ReviewBubble(RoundedSurface):
         self.chat_credit.setVisible(bool(credit) and not chatting)
         self.sync_actions()
         self.message.ensurePolished()
-        width=300 if chatting else 388
+        width = 332 if mode in {"summary", "notice"} else 300 if chatting else 388
+        width = min(width, self.screen().availableGeometry().width() - 24)
         if chatting: text=sentence_lines(text,width-2*margin-34,self.message.fontMetrics())
         # Progress can change before a sentence finishes. Never restart its
         # typewriter on every update or leave a lone first letter on screen.

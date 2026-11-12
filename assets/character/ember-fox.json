@@ -1,0 +1,6 @@
+{
+  "name": "불여우 탐정",
+  "animations": {
+    "idle": { "frames": ["ember-fox.png"] }
+  }
+}

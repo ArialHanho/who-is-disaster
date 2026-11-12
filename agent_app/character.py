@@ -128,7 +128,8 @@ class DesktopCharacter(QWidget):
                 self.preserve_gesture_art = False
                 self.motion, self.pose = PortraitMotion(), PortraitPose()
         elif self.skin.continuous_motion:
-            self.pose = self.motion.step(dt, state, pressed=self.pressed, look=self.look[0], drag=self.drag_lean, expressive=self.skin.pose_motion)
+            expressive = self.skin.pose_motion or self.preferences["character"] == "ember_fox"
+            self.pose = self.motion.step(dt, state, pressed=self.pressed, look=self.look[0], drag=self.drag_lean, expressive=expressive)
         if self.bubble.isVisible(): self.place_popup(self.bubble)
         self.update()
 
@@ -405,12 +406,15 @@ class DesktopCharacter(QWidget):
             if popup is self.bubble:
                 # Match the art actually on screen, not the tallest possible pose.
                 top=0
-                if self.skin.continuous_motion:
+                if self.skin.continuous_motion and self.skin.layout == "portrait":
                     custom,layers,pose=self.character_art(self.display_state())
                     top=visible_subject_y(custom,layers,self.canvas_height,self.canvas_width)
                     if pose is not None and not self.preferences['reduced_motion']:
                         bottom=self.canvas_height-12
                         top=bottom+(top-bottom)*pose.stretch+pose.lift
+                elif self.skin.continuous_motion:
+                    # Keep the speech anchored while the compact sprite hops.
+                    top = 36
                 subject=QRect(self.geometry())
                 subject.setTop(self.y()+max(0,round(top*self.height()/self.canvas_height)))
                 position=popup_position(area,subject,popup.size(),centered=True,gap=8)

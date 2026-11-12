@@ -22,7 +22,7 @@ from .review_revision import excluded_branches, included_branches, included_pull
 from .review_theme import STYLE, ACCENT, BROWN, MUTED, label, button, load_fonts, clear, scroll_body, FlowLayout, size_popup, reveal, RoundedSurface, RoundedDialog
 from .github_ui import GitHubDialog
 from .github_actions import STATE_LABELS, finding_targets, needs_attention, repair_instruction
-from .review_bubble import ReviewBubble
+from .review_bubble import ReviewBubble, issue_summary
 from .single_instance import SingleInstance
 from .review_watch import ChangeWatcher
 from .finding_history_ui import FindingHistory
@@ -341,7 +341,9 @@ class BranchDialog(RoundedDialog):
                        if (item := self.list.item(index)).checkState() == Qt.CheckState.Checked}
             self.selected = (self.selected - names) | checked
             self.info.setText(f"{len(checked)}/{len(self.rows)}개 분석 · 기준 {self.base or 'HEAD'}")
-        pulls = included_pulls({"excluded_branches": json.dumps(sorted(self.excluded))}, self.pulls)
+        scope = {**self.repo, "all_branches": self.all.isChecked(), "targets": json.dumps(sorted(self.selected)),
+                 "excluded_branches": json.dumps(sorted(self.excluded))}
+        pulls = included_pulls(scope, self.pulls, self.base)
         self.pr_info.setText(f"열린 PR {len(pulls)}개 포함" if self.open_prs.isChecked() else "PR을 직접 추가할 수 있어요.")
         self.pr_list.clear()
         for pull in pulls:
@@ -638,7 +640,7 @@ class ReviewPanel(RoundedSurface):
                     total = len(catalog["branches"])
                     count = len(included_branches(repo, catalog))
                     scope = f"브랜치 {count}/{total}개" if total else "선택한 브랜치"
-                    if repo["open_prs"]: scope += f" · 열린 PR {len(included_pulls(repo, catalog.get('pulls', [])))}개" if catalog["checked"] else " · 열린 PR 자동"
+                    if repo["open_prs"]: scope += f" · 열린 PR {len(included_pulls(repo, catalog.get('pulls', []), catalog['default']))}개" if catalog["checked"] else " · 열린 PR 자동"
                     self.cards.addWidget(label(repo["name"] + " · " + scope, 12, MUTED))
                     coverage = self.service.latest_coverage(repo['id'])
                     if coverage.get('omitted_files'):
@@ -662,7 +664,7 @@ class ReviewPanel(RoundedSurface):
                 count = len(included_branches(repo, catalog))
                 scope = f"브랜치 {count}/{total}개" if total else "선택한 브랜치"
                 detail = scope + (" · 미커밋 포함" if repo["include_working"] else "")
-                if repo["open_prs"]: detail += f" · 열린 PR {len(included_pulls(repo, catalog.get('pulls', [])))}개" if catalog["checked"] else " · 열린 PR 자동"
+                if repo["open_prs"]: detail += f" · 열린 PR {len(included_pulls(repo, catalog.get('pulls', []), catalog['default']))}개" if catalog["checked"] else " · 열린 PR 자동"
                 inner = self.card(repo["name"], detail, "변경 시 점검 " + ("켜짐" if repo["auto"] else "꺼짐"))
                 row = QHBoxLayout()
                 for title, fn in [("브랜치 보기", lambda r=repo:self.branches(r["id"])), ("설정", lambda r=repo:self.edit_repo(r["id"]))]:
@@ -821,11 +823,16 @@ class ReviewPanel(RoundedSurface):
         else:
             for target in targets:
                 head = target["head"]
+                lookup_error = report.get("lookup_errors", {}).get(head)
+                if lookup_error:
+                    layout.addWidget(label(f'{target["label"]} · {head[:8]} · {lookup_error}', 12, MUTED))
+                    continue
                 commit = available.get(head)
                 if commit is None:
                     continue
                 state = STATE_LABELS.get(commit["state"], "검사 결과 미확인")
-                layout.addWidget(label(f'{target["label"]} · {head[:8]} · {state} · {commit["tests"]}', 12, MUTED))
+                test_result = "" if commit["state"] == "missing" else " · " + commit["tests"]
+                layout.addWidget(label(f'{target["label"]} · {head[:8]} · {state}{test_result}', 12, MUTED))
                 failure = next((run for run in commit.get("runs", ()) if needs_attention(run)), None)
                 if failure:
                     detail = failure.get("diagnosis", {}).get("cause")
@@ -1201,11 +1208,7 @@ class ReviewPanel(RoundedSurface):
         if self.sprite.bubble.isVisible() and self.sprite.bubble.mode not in {"progress","chatter","interaction","greeting"}: return
         notice = self.service.pending_notice(repo_id)
         if not notice["findings"] and not notice["error"]: return
-        titles = [("다시 발견 · " if f.get("reopened_count") else "") + f["title"] for f in notice["findings"][:2]]
-        if len(notice["findings"]) > 2:
-            titles = [f"확인할 코드 문제 {len(notice['findings'])}건이 있어요.", titles[0]]
-        if notice["error"]: titles.insert(0, "분석 연결 확인이 필요해요")
-        self.latest_bubble_message = notice["repo"]["name"] + "\n" + "\n".join(titles)
+        self.latest_bubble_message = issue_summary(notice["findings"], repository=notice["repo"]["name"], error=bool(notice["error"]))
         self.sprite.actions.pulse("attention", 12)
         self.sprite.bubble.show_message(self.latest_bubble_message, mode="notice", repo_id=repo_id, auto_hide_ms=12000,
                                        page="brief")

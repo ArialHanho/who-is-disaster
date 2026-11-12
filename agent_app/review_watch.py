@@ -19,7 +19,7 @@ def revision(repo):
     pulls = []
     if repo['open_prs']:
         pulls = sorted((p['number'], p['head'], p['base'])
-                       for p in included_pulls(repo, github_account.open_pulls(repo['source'])))
+                       for p in included_pulls(repo, github_account.open_pulls(repo['source']), catalog['default']))
     else:
         explicit = sorted(t for t in selected if t.startswith('pr:'))
         if explicit:

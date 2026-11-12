@@ -6,8 +6,13 @@ import uuid
 from PySide6.QtGui import QImageReader
 from .actions import ACTION_NAMES
 
-BUILTINS = {"fox": ("책 읽는 여우", "#e8865a"), "cat": ("호기심 고양이", "#8c9fbd"), "robot": ("작은 로봇", "#77a895")}
-DEFAULTS = {"character": "fox", "name": "코드 비서", "scale": 100, "reduced_motion": False}
+BUILTINS = {
+    "ember_fox": ("불여우 탐정", "#d97745"),
+    "fox": ("책 읽는 여우", "#e8865a"),
+    "cat": ("호기심 고양이", "#8c9fbd"),
+    "robot": ("작은 로봇", "#77a895"),
+}
+DEFAULTS = {"character": "ember_fox", "name": "코드 비서", "scale": 100, "reduced_motion": False}
 SCALES = (50, 65, 85, 100, 125, 150)
 
 
@@ -15,13 +20,14 @@ def load_preferences(root):
     try:
         data = json.loads((Path(root) / ".data/character/settings.json").read_text(encoding="utf-8"))
         value = {**DEFAULTS, **data}
-        if value["character"] not in {**BUILTINS, "legacy": None} and not pack_path(root, value["character"]): value["character"] = "fox"
+        if value["character"] not in {**BUILTINS, "legacy": None} and not pack_path(root, value["character"]):
+            value["character"] = DEFAULTS["character"]
         if value["scale"] not in SCALES: value["scale"] = 100
         value["name"] = str(value["name"]).strip()[:10] or DEFAULTS["name"]
         value["reduced_motion"] = bool(value["reduced_motion"])
         return value
     except (OSError, ValueError, TypeError):
-        return {**DEFAULTS, "character": "legacy" if (Path(root) / "character.json").is_file() else "fox"}
+        return {**DEFAULTS, "character": "legacy"} if (Path(root) / "character.json").is_file() else DEFAULTS.copy()
 
 
 def save_preferences(root, value):

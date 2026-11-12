@@ -111,5 +111,20 @@ class ChangeWatchTests(unittest.TestCase):
             self.assertEqual(watcher.baselines[str(rid)],first)
             watcher.close();watcher.deleteLater();app.processEvents()
 
+    def test_new_unchecked_branch_pr_does_not_schedule_a_review(self):
+        repo = dict(source='https://github.com/example/app', branch='', all_branches=0, open_prs=1,
+                    targets='["dev"]', include_working=0, rules='')
+        catalog = {'default': 'main', 'branches': [
+            {'name': 'main', 'head': 'a'*40}, {'name': 'dev', 'head': 'b'*40}, {'name': 'new', 'head': 'c'*40},
+        ]}
+        pulls = [{'number': 7, 'head': 'c'*40, 'base': 'main', 'head_branch': 'new', 'same_repository': True}]
+        with patch('agent_app.review_watch.branches', return_value=catalog), patch(
+                'agent_app.review_watch.github_account.open_pulls', return_value=pulls):
+            before = revision(repo)
+            pulls[0]['head'] = 'd'*40
+            self.assertEqual(revision(repo), before)
+            pulls[0]['same_repository'] = False
+            self.assertNotEqual(revision(repo), before)
+
 
 if __name__=='__main__': unittest.main()

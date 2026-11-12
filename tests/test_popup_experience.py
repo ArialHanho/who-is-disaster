@@ -10,6 +10,7 @@ from agent_app.character import DesktopCharacter
 from agent_app.review_service import ReviewService
 from agent_app.review_ui import ReviewPanel, CONFIG
 from agent_app.typing_label import graphemes
+from tests.test_review import finding, snapshot
 
 
 class PopupExperienceTests(unittest.TestCase):
@@ -81,6 +82,32 @@ class PopupExperienceTests(unittest.TestCase):
         self.bubble.show_message('바로 답이 안 나와도 괜찮아요. 잠깐 두고 봐요.',mode='chatter')
         self.assertEqual(self.bubble.message.full_text,'바로 답이 안 나와도 괜찮아요.\n잠깐 두고 봐요.')
 
+    def test_issue_summary_counts_problems_behind_recent_candidates(self):
+        rid = self.service.save_repo('https://github.com/example/app')
+        problem = {**finding('missing_change'), 'key': 'required-argument', 'severity': 'problem',
+                   'title': '호출부에 필수 인자가 빠졌어요', 'evidence': [
+                       {'path': 'app/client.py', 'line': 3, 'quote': 'send()', 'role': 'caller'},
+                       {'path': 'app/service.py', 'line': 9, 'quote': 'def send(token):', 'role': 'implementation'},
+                   ]}
+        warning = {**finding(), 'key': 'unused-wrapper'}
+        candidates = [{**finding(confidence='medium'), 'key': f'candidate-{i}'} for i in range(80)]
+        self.service.record(self.service.repo(rid), snapshot({'app.py': 'value = 1\n'}), 'fixture',
+                            {'findings': [problem, warning, *candidates]})
+
+        self.bubble.refresh_text()
+        self.assertEqual(self.bubble.message.full_text.splitlines(), [
+            '문제 1건 · 경고 1건',
+            '• 호출부에 필수 인자가 빠졌어요',
+            '\u3000변경 누락 · service.py:9',
+            '• 중복된 래퍼',
+            '\u3000과한 설계 · app.py:1',
+        ])
+        self.panel.finding_page = 3
+        self.panel.expanded = {self.service.findings(rid)[0]['id']}
+        self.bubble.overview.click()
+        self.assertEqual(self.panel.finding_page, 0)
+        self.assertFalse(self.panel.expanded)
+
     def test_thinking_progress_is_readable_and_briefing_opens_while_busy(self):
         self.service.save_repo('https://github.com/example/app')
         self.bubble.show_message('AI가 코드를 살펴보고 있어요.', mode='progress')
@@ -129,7 +156,7 @@ class PopupExperienceTests(unittest.TestCase):
         token = self.sprite.actions.begin("thinking")
         self.panel.progress(token, "example/repo-1", "organizing", "정리 중이에요")
         self.assertEqual(self.bubble.message.full_text, "API 호출 인자가 빠졌어요.")
-        self.bubble.open_details()
+        self.bubble.overview.click()
         self.assertEqual(self.panel.page, "brief")
         self.assertEqual(self.panel.repo_id, ids[0])
         self.assertTrue(self.panel.isVisible())

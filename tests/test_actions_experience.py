@@ -180,6 +180,23 @@ class ActionsEvidenceTests(unittest.TestCase):
         self.assertEqual(now["commits"], {})
         self.assertIn("미확인", ci.finding_execution({**finding(), "head": HEAD}, now))
 
+    def test_on_demand_checks_keep_other_commits_and_scope_lookup_errors(self):
+        self.rows, self.jobs = [raw_run(conclusion="success")], [job("success")]
+        other_head = "b" * 40
+        with tempfile.TemporaryDirectory() as temp:
+            service = ReviewService(temp)
+            rid = service.save_repo("https://github.com/example/app")
+            service.refresh_actions(rid, TARGETS, on_demand=True)
+            other_targets = [{**TARGETS[0], "head": other_head}]
+            self.rows = [{**raw_run(rid=11, conclusion="success"), "head_sha": other_head}]
+            service.refresh_actions(rid, other_targets, on_demand=True)
+            self.assertEqual(set(service.actions_report(rid)["commits"]), {HEAD, other_head})
+            with patch.object(ci, "pages", side_effect=ValueError("access unavailable")):
+                service.refresh_actions(rid, other_targets, on_demand=True)
+            report = service.actions_report(rid)
+            self.assertIn("Actions 통과", ci.finding_execution({**finding(), "head": HEAD}, report))
+            self.assertIn("조회 미완료", ci.finding_execution({**finding(), "head": other_head}, report))
+
 
 class ResidentExperienceTests(unittest.TestCase):
     @classmethod

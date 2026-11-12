@@ -19,9 +19,12 @@ def included_branches(repo, catalog):
             b['name'] not in excluded and (repo['all_branches'] or b['name'] in selected)]
 
 
-def included_pulls(repo, pulls):
+def included_pulls(repo, pulls, default=""):
+    base = repo['branch'] or default
     excluded = excluded_branches(repo)
-    return [p for p in pulls if not (p.get('same_repository') and p.get('head_branch') in excluded)]
+    selected = set(json.loads(repo['targets']))
+    return [p for p in pulls if not p.get('same_repository') or p.get('head_branch') == base or
+            p.get('head_branch') not in excluded and (repo['all_branches'] or p.get('head_branch') in selected)]
 
 
 def revision_token(repo, catalog, pulls, detached_head='', *, working=()):

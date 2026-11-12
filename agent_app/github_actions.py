@@ -249,7 +249,8 @@ def finding_execution(finding, report):
     targets, prefix = finding_targets(finding)
     def describe(text): return " · ".join([*prefix, text] if text else prefix)
     if not targets and prefix: return describe("")
-    if report.get("error"): return describe("Actions 조회 미완료 · 통과 여부 미확인")
+    if report.get("error") or any(t["head"] in report.get("lookup_errors", {}) for t in targets):
+        return describe("Actions 조회 미완료 · 통과 여부 미확인")
     commits = [report.get("commits", {}).get(target["head"]) for target in targets]
     if not commits or any(c is None for c in commits): return describe("해당 검토 커밋의 실행 결과 미확인")
     status = " / ".join(dict.fromkeys(STATE_LABELS[c["state"]] + " · " + c["tests"] for c in commits))
