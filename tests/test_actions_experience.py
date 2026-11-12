@@ -12,14 +12,15 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch, Mock
 import uuid
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QCoreApplication, QEvent, QThreadPool, Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QLabel, QPushButton
+from PySide6.QtWidgets import QLabel, QPushButton
 from agent_app import github_actions as ci
 from agent_app.review_service import ReviewService
 from agent_app.review_ui import ReviewPanel, CONFIG
 from agent_app.character import DesktopCharacter
 from agent_app.single_instance import SingleInstance
+from tests import qt_app
 from tests.test_review import snapshot, finding
 
 
@@ -86,7 +87,7 @@ class ActionsEvidenceTests(unittest.TestCase):
             self.assertEqual(run["diagnosis"]["method"], "steps")
 
     def test_issue_card_fetches_the_reviewed_commit_only_when_clicked(self):
-        app = QApplication.instance() or QApplication([])
+        app = qt_app()
         with tempfile.TemporaryDirectory() as temp, patch("agent_app.finding_history_ui.FindingHistory.load", lambda self: None), \
                 patch.object(ci.codex_provider, "generate") as generate:
             service = ReviewService(Path(temp) / "db")
@@ -109,7 +110,10 @@ class ActionsEvidenceTests(unittest.TestCase):
                 generate.assert_not_called()
             finally:
                 panel.watcher.close()
+                panel.idle_chat.close()
+                QThreadPool.globalInstance().waitForDone(5000)
                 panel.deleteLater()
+                QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
                 app.processEvents()
 
     def test_passed_build_is_not_test_pass_and_virtual_or_old_code_cannot_inherit(self):
@@ -179,7 +183,7 @@ class ActionsEvidenceTests(unittest.TestCase):
 
 class ResidentExperienceTests(unittest.TestCase):
     @classmethod
-    def setUpClass(cls): cls.app = QApplication.instance() or QApplication([])
+    def setUpClass(cls): cls.app = qt_app()
 
     def test_cross_process_duplicate_activates_existing_and_lock_releases(self):
         name = "companion-test-" + uuid.uuid4().hex
