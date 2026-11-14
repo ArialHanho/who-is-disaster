@@ -531,6 +531,7 @@ class ReviewPanel(RoundedSurface):
         selected = [r for r in repos if self.repo_id is None or r["id"] == self.repo_id]
         for key, tab in self.tabs.items():
             tab.setChecked(key == self.page)
+        self.scan.setVisible(bool(repos))
         self.scan.setEnabled(bool(repos) and not self.busy)
         self.scan.setText("분석 중" if self.busy else "지금 분석")
         self.progress_bar.setVisible(self.busy)
@@ -553,14 +554,23 @@ class ReviewPanel(RoundedSurface):
             if repos:
                 self.chips([(None, f"모든 저장소 {len(repos)}")] + [(r["id"], r["name"].split("/")[-1][:22]) for r in repos], self.repo_id, self.select_repo)
             if not repos:
-                self.card("어떤 코드를 함께 살펴볼까요?", "위에서 GitHub·로컬 폴더·주소 입력 중 하나를 골라 주세요. 폴더를 이곳이나 캐릭터에 놓아도 연결할 수 있어요.")
+                if self.page == "brief":
+                    self.card("아직 연결한 저장소가 없어요", "연결한 저장소의 분석 결과가 여기에 표시돼요.")
+                else:
+                    inner = self.card("아직 분석 기록이 없어요", "저장소를 연결하고 첫 분석을 시작해 주세요.")
+                    inner.addWidget(button("저장소 연결", lambda: self.open_tab("repos"), role="chip"))
             elif self.page == "history":
+                has_history = False
                 for repo in selected:
-                    self.cards.addWidget(label(repo["name"], 14, BROWN, True))
-                    for f in self.service.findings(repo["id"], True):
-                        if f["disposition"] != "open" or f["state"] != "open":
-                            self.finding_card(repo, f)
+                    findings = [f for f in self.service.findings(repo["id"], True)
+                                if f["disposition"] != "open" or f["state"] != "open"]
                     runs = self.service.runs(repo["id"])[:5]
+                    if not (findings or runs):
+                        continue
+                    has_history = True
+                    self.cards.addWidget(label(repo["name"], 14, BROWN, True))
+                    for finding in findings:
+                        self.finding_card(repo, finding)
                     if runs:
                         log_box = QWidget()
                         log_layout = QVBoxLayout(log_box)
@@ -579,13 +589,16 @@ class ReviewPanel(RoundedSurface):
                         log_button.clicked.connect(toggle_log)
                         self.cards.addWidget(log_button)
                         self.cards.addWidget(log_box)
+                if not has_history:
+                    self.card("아직 분석 기록이 없어요", "첫 분석 결과가 여기에 쌓여요.")
             else:
                 current = [(r, f) for r in selected for f in self.service.findings(r['id'], limit=None) if f['category'] != 'feature']
                 active_count = sum(f['state'] == 'open' and f['confidence'] == 'high' for _, f in current)
                 candidate_count = len(current) - active_count
                 self.chips([("active", f"코드 문제 {active_count}"), ("review", f"검토 후보 {candidate_count}"), ("resolved", "해결 기록")], self.lifecycle, self.set_lifecycle)
-                self.chips([("all", "전체"), ("structure", "구조"), ("placeholder_code", "더미"), ("overengineering", "과한 설계"), ("circular_dependency", "순환"), ("missing_change", "변경 누락"), ("structural_conflict", "충돌")], self.category, self.set_category, "filter")
                 entries = self.brief_findings(selected, current)
+                if entries or self.category != "all":
+                    self.chips([("all", "전체"), ("structure", "구조"), ("placeholder_code", "더미"), ("overengineering", "과한 설계"), ("circular_dependency", "순환"), ("missing_change", "변경 누락"), ("structural_conflict", "충돌")], self.category, self.set_category, "filter")
                 for index, (_, finding) in enumerate(entries):
                     if finding["id"] in self.expanded:
                         self.finding_page = index // FINDINGS_PER_PAGE
@@ -645,11 +658,12 @@ class ReviewPanel(RoundedSurface):
                     elif errors:
                         self.card("분석을 마치지 못한 저장소가 있어요", "위 안내를 확인해 주세요. 아직 문제 유무를 판단할 수 없는 상태예요.")
                     elif unreviewed:
-                        self.card(f"아직 분석하지 않은 저장소 {unreviewed}곳", "‘지금 분석’을 누르면 연결한 코드와 전체 브랜치를 순서대로 살펴봐요.")
+                        self.card(f"아직 분석하지 않은 저장소 {unreviewed}곳", "‘지금 분석’을 누르면 설정한 범위를 살펴봐요.")
                     elif self.category != "all":
                         self.card("이 분류의 항목은 없어요", "다른 분류의 결과는 ‘전체’에서 확인할 수 있어요.")
                     else:
-                        self.card("검토 후보가 없어요" if self.lifecycle == "review" else "현재 확실한 코드 문제는 없어요", "추가 판단이 필요한 항목은 ‘검토 후보’에서 확인해 주세요.")
+                        hint = "추가 판단이 필요한 항목은 ‘검토 후보’에서 확인해 주세요." if self.lifecycle == "active" and candidate_count else ""
+                        self.card("검토 후보가 없어요" if self.lifecycle == "review" else "확인한 범위에 코드 문제가 없어요", hint)
                 self.cards.addWidget(label("보고 있는 저장소", 12, MUTED, True))
                 for repo in selected:
                     catalog = self.service.catalog(repo["id"])
@@ -1107,7 +1121,7 @@ class ReviewPanel(RoundedSurface):
             self.cards.addWidget(label('시작할 때 캐릭터만 표시해요. 이미 실행 중이면 하나만 유지해요.', 12, MUTED))
         self.card("표정도, 움직임도 내 취향대로", "캐릭터를 고르고 행동을 미리 보세요. 이름·크기와 내 애니메이션 팩도 바꿀 수 있어요.")
         self.cards.addWidget(button("캐릭터 바꾸기", self.customize_character, True))
-        self.cards.addWidget(label("캐릭터를 숨기면 화면 가장자리에 ‘비서 열기’ 탭이 남아요. 트레이에서도 다시 열 수 있어요.", 12, MUTED))
+        self.cards.addWidget(label("숨긴 캐릭터는 화면 가장자리의 ‘캐릭터 다시 표시’ 탭이나 트레이에서 열 수 있어요.", 12, MUTED))
         self.card('기타 연결','대기 중 가벼운 한마디와 현재 위치 날씨를 골라 켤 수 있어요.')
         self.cards.addWidget(button('기타 연결',self.other_connections))
         self.cards.addWidget(label("자동 점검과 미커밋 포함 여부는 저장소별 설정에서 바꿀 수 있어요.", 12, MUTED))
@@ -1360,26 +1374,23 @@ def run(root):
     panel.sprite = sprite
     instance.activated.connect(sprite.restore)
     instance.full_scan_requested.connect(panel.scan_all)
-    sprite.show()
+    sprite.show_character()
     pixmap = QPixmap(sprite.size())
     pixmap.fill(Qt.GlobalColor.transparent)
     sprite.render(pixmap)
     tray = QSystemTrayIcon(QIcon(pixmap), app)
-    tray.setToolTip("코드 비서 · 문제와 새 기능만 알려드려요")
+    tray.setToolTip("Who is disaster · 클릭해서 브리핑 열기")
     menu = QMenu()
-    def open_brief():
-        panel.open_tab("brief")
-        sprite.open_panel()
-    menu.addAction("코드 브리핑", open_brief)
+    menu.addAction("브리핑 열기", sprite.open_brief)
     menu.addAction("지금 분석", panel.scan_now)
     menu.addAction("캐릭터 바꾸기", panel.customize_character)
     menu.addAction('기타 연결',panel.other_connections)
-    menu.addAction("비서 다시 열기", sprite.restore)
-    menu.addAction("비서 숨기기 · 열기 탭 유지", sprite.hide_character)
+    menu.addAction("캐릭터 다시 표시", sprite.restore)
+    menu.addAction("캐릭터 접기", sprite.hide_character)
     menu.addSeparator()
     menu.addAction("종료", app.quit)
     tray.setContextMenu(menu)
-    tray.activated.connect(lambda reason:sprite.open_panel() if reason == QSystemTrayIcon.ActivationReason.Trigger else None)
+    tray.activated.connect(lambda reason:sprite.open_brief() if reason == QSystemTrayIcon.ActivationReason.Trigger else None)
     tray.show()
     QTimer.singleShot(1500, panel.scan_all if "--scan-all" in sys.argv else panel.tick)
     try:

@@ -146,7 +146,7 @@ class ReviewBubble(RoundedSurface):
         if panel.busy:
             self.show_message(panel.progress_text, mode="progress")
         elif not count:
-            self.show_message(self.character.dialogue.choose('greeting'))
+            self.show_message("브리핑에서 저장소를 연결해요.")
         else:
             errors = sum(bool(r["error"]) for r in repos)
             unreviewed = sum(not bool(r["last_head"]) for r in repos)
@@ -165,8 +165,8 @@ class ReviewBubble(RoundedSurface):
         self.expiry.stop()
         self.mode, self.target_repo, self.remaining_ms = mode, repo_id, auto_hide_ms
         chatting = self.compact()
-        self.overview.setText({"progress": "브리핑 열기", "notice": "저장소 문제 보기"}.get(mode, "전체 문제 보기"))
-        self.overview.setVisible(mode in {'progress', 'summary', 'notice'} or mode == 'greeting' and bool(self.character.panel.service.repos()))
+        self.overview.setText({"greeting": "브리핑 열기", "progress": "브리핑 열기", "notice": "저장소 문제 보기"}.get(mode, "전체 문제 보기"))
+        self.overview.setVisible(mode in {"greeting", "progress", "summary", "notice"})
         self.details.setText("알림 보기" if mode == "notice" else "브리핑 열기")
         self.bubble_header.setVisible(not chatting)
         self.bubble_footer.setVisible(not chatting)
@@ -229,7 +229,7 @@ class ReviewBubble(RoundedSurface):
         menu.addAction('기타 연결',panel.other_connections)
         menu.addAction('1시간 조용히',panel.idle_chat.quiet_hour)
         menu.addAction('오늘은 조용히',panel.idle_chat.quiet_today)
-        menu.addAction('브리핑 열기',self.character.open_panel)
+        menu.addAction('브리핑 열기', self.character.open_brief)
         menu.addSeparator()
         menu.addAction('닫기',self.hide)
         return menu

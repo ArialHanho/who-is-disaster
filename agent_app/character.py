@@ -2,7 +2,7 @@
 import json
 import math
 import time
-from PySide6.QtCore import Qt, QTimer, QRect, QPoint, QPropertyAnimation, QEasingCurve
+from PySide6.QtCore import Qt, QEvent, QTimer, QRect, QPoint, QPropertyAnimation, QEasingCurve
 from PySide6.QtGui import QPainter
 from PySide6.QtWidgets import QApplication, QMenu, QWidget, QVBoxLayout
 from .actions import ActionState
@@ -63,12 +63,14 @@ class DesktopCharacter(QWidget):
         self.motion, self.pose, self.drag_lean = PortraitMotion(), PortraitPose(), 0
         self.gesture_motion, self.gesture_pose = PhotoGestureMotion(), PortraitPose()
         self.preserve_gesture_art = False
-        self.feedback, self.held, self.wheel_delta = TouchFeedback(), False, 0
+        self.feedback, self.wheel_delta = TouchFeedback(), 0
+        self.held = self.double_clicked = False
         self.last_tick = time.monotonic()
         self.last_action, self.action_frame = "idle", 0
         self.setWindowTitle(config["name"] + " · 캐릭터")
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Tool | Qt.WindowType.WindowStaysOnTopHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
         self.setFixedSize(width, height)
         self.setMouseTracking(True)
         self.setAcceptDrops(True)
@@ -80,7 +82,6 @@ class DesktopCharacter(QWidget):
         self.timer = QTimer(self)
         self.timer.setTimerType(Qt.TimerType.PreciseTimer)
         self.timer.timeout.connect(self.animate)
-        self.timer.start(16 if self.skin.continuous_motion and not self.preferences["reduced_motion"] else 40)
         self.click_timer = QTimer(self)
         self.click_timer.setSingleShot(True)
         self.click_timer.timeout.connect(self.click_cycle)
@@ -89,6 +90,7 @@ class DesktopCharacter(QWidget):
         self.snap_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
         self.snap_animation.finished.connect(self.save_position)
         self.hold_timer = QTimer(self)
+        self.hold_timer.setSingleShot(True)
         self.hold_timer.setInterval(650)
         self.hold_timer.timeout.connect(self.pet_character)
         self.long_hold_timer = QTimer(self)
@@ -104,17 +106,53 @@ class DesktopCharacter(QWidget):
         try:
             saved = json.loads((root / ".data/widget.json").read_text())
             x, y = saved["x"], saved["y"]
-            if any(s.availableGeometry().contains(x + 60, y + 60) for s in QApplication.screens()):
+            if (type(x) is int and type(y) is int and
+                    any(s.availableGeometry().contains(x, y) for s in QApplication.screens())):
                 self.move(x, y)
-        except (OSError, ValueError, KeyError):
+        except (OSError, ValueError, KeyError, TypeError, OverflowError):
             pass
         self.clamp_position()
+        self.screen_timer = QTimer(self)
+        self.screen_timer.setSingleShot(True)
+        self.screen_timer.setInterval(120)
+        self.screen_timer.timeout.connect(self.desktop_changed)
+        app = QApplication.instance()
+        for screen in app.screens():
+            screen.availableGeometryChanged.connect(self.schedule_desktop_change)
+        app.screenAdded.connect(self.screen_added)
+        app.screenRemoved.connect(self.schedule_desktop_change)
+
+    def screen_added(self, screen):
+        screen.availableGeometryChanged.connect(self.schedule_desktop_change)
+        self.schedule_desktop_change()
+
+    def schedule_desktop_change(self, *_):
+        self.screen_timer.start()
+
+    def desktop_changed(self):
+        if self.pressed:
+            return
+        self.snap_animation.stop()
+        self.clamp_position()
+        if self.restore_tab and not self.restore_tab.isHidden():
+            self.restore_tab.place()
+        for popup in (self.panel, self.bubble):
+            if popup.isVisible():
+                self.place_popup(popup)
+
+    def animation_interval(self, stationary):
+        if self.preferences["reduced_motion"]:
+            return 80
+        if self.skin.pose_motion and stationary:
+            return 80
+        return 16 if self.skin.continuous_motion else 40
 
     def animate(self):
         now = time.monotonic()
-        dt, self.last_tick = min(.05, max(0, now-self.last_tick)), now
+        elapsed, self.last_tick = max(0, now-self.last_tick), now
+        dt = min(.05, elapsed)
         if not self.isVisible(): return
-        self.frame += dt * 10
+        self.frame += min(.1, elapsed) * 10
         ease = 1 - math.exp(-dt / .14)
         self.look = tuple(a+(b-a)*ease for a,b in zip(self.look, self.target_look))
         self.hover += ((1 if self.hovering else 0) - self.hover)*ease
@@ -130,33 +168,40 @@ class DesktopCharacter(QWidget):
         elif self.skin.continuous_motion:
             self.pose = self.motion.step(dt, state, pressed=self.pressed, look=self.look[0], drag=self.drag_lean,
                                          expressive=self.skin.pose_motion)
+        stationary = (state in {"idle", "sleep"} and self.frame-self.action_frame >= 3
+                      and not (self.pressed or self.gesture_motion.active or self.feedback.events))
+        interval = self.animation_interval(stationary)
+        if self.timer.interval() != interval:
+            self.timer.setInterval(interval)
         if self.bubble.isVisible(): self.place_popup(self.bubble)
         self.update()
 
     def character_art(self, state):
         # Use the same existing action art as the settings preview while dragging.
-        art_state = ('dragging' if self.dragged else 'idle') if self.preserve_gesture_art else state
+        art_state = ('dragging' if self.pressed and self.dragged else 'idle') if self.preserve_gesture_art else state
         custom = self.skin.frame(art_state, self.frame - self.action_frame)
         layers = self.skin.layers(art_state, self.frame)
         pose = (self.gesture_pose if self.preserve_gesture_art else self.pose) if self.skin.continuous_motion else None
         return custom, layers, pose
 
     def paintEvent(self, event):
-        p = QPainter(self)
-        p.scale(self.width() / self.canvas_width, self.height() / self.canvas_height)
-        p.translate((self.canvas_width-142)/2, 0)
         state = self.display_state()
         custom, layers, pose = self.character_art(state)
-        draw_character(p, self.config, self.frame, state,
-                       style=self.preferences["character"], custom=custom,
-                       look=self.look, hover=self.hover, pressed=self.pressed,
-                       motion=not self.preferences["reduced_motion"], height=self.canvas_height,
-                       pose=pose,
-                       layers=layers,stage_width=self.canvas_width,
-                       title_override="동작 미리보기" if self.pose_demo else None,
-                       show_nameplate=not self.bubble.isVisible())
-        if not self.preferences["reduced_motion"]: self.feedback.paint(p)
-        p.end()
+        p = QPainter(self)
+        try:
+            p.scale(self.width() / self.canvas_width, self.height() / self.canvas_height)
+            p.translate((self.canvas_width-142)/2, 0)
+            draw_character(p, self.config, self.frame, state,
+                           style=self.preferences["character"], custom=custom,
+                           look=self.look, hover=self.hover, pressed=self.pressed,
+                           motion=not self.preferences["reduced_motion"], height=self.canvas_height,
+                           pose=pose,
+                           layers=layers,stage_width=self.canvas_width,
+                           title_override="동작 미리보기" if self.pose_demo else None,
+                           show_nameplate=not self.bubble.isVisible())
+            if not self.preferences["reduced_motion"]: self.feedback.paint(p)
+        finally:
+            p.end()
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -173,10 +218,7 @@ class DesktopCharacter(QWidget):
             self.long_hold_timer.start(4000)
             self.dragged = False
             self.pressed = True
-            if self.skin.continuous_motion:
-                self.preserve_gesture_art = True
-                self.gesture_motion.trigger('lift')
-                self.skin.reset_pose_to_idle()
+            self.timer.setInterval(self.animation_interval(False))
             self.held = False
             self.hold_timer.start()
             self.feedback.add(event.position().x()*self.canvas_width/self.width()-(self.canvas_width-142)/2, event.position().y()*self.canvas_height/self.height())
@@ -184,7 +226,10 @@ class DesktopCharacter(QWidget):
 
     def mouseMoveEvent(self, event):
         self.target_look = (max(-3, min(3, (event.position().x()/self.width()-.5)*7)), max(-2, min(2, (event.position().y()/self.height()-.5)*5)))
-        if self.pressed and event.buttons() & Qt.MouseButton.LeftButton and hasattr(self, "press_position"):
+        if self.pressed and not event.buttons() & Qt.MouseButton.LeftButton:
+            self.cancel_pointer_gesture()
+            return
+        if self.pressed and hasattr(self, "press_position"):
             position = event.globalPosition().toPoint()
             now = time.monotonic()
             step = position - self.speed_position
@@ -207,11 +252,10 @@ class DesktopCharacter(QWidget):
                     if self.skin.continuous_motion:
                         self.preserve_gesture_art = True
                         self.gesture_motion.trigger('lift')
-                        self.skin.reset_pose_to_idle()
                     if not (self.config['kind']=='code' and self.bubble.mode in {'notice','progress'}):
                         self.bubble.hide()
                     self.panel.hide()
-                self.actions.pulse("dragging", .3)
+                self.actions.touch()
                 self.move(self.window_start + delta)
                 if fast and not self.fast_dragged:
                     self.fast_dragged = True
@@ -225,17 +269,17 @@ class DesktopCharacter(QWidget):
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             self.pressed = False
+            dragged, self.dragged = self.dragged, False
             self.hold_timer.stop()
             self.long_hold_timer.stop()
             self.fast_drag_timer.stop()
-            if self.dragged:
+            if dragged:
                 if self.preserve_gesture_art: self.gesture_motion.trigger('land')
                 screen=QApplication.screenAt(event.globalPosition().toPoint()) or self.screen()
                 self.snap_to_edge(screen.availableGeometry())
-                self.actions.pulse("greeting", 1)
                 if self.config['kind']=='code':
                     self.say_reaction('drop_fast' if self.fast_dragged else 'drop', auto_hide_ms=2500)
-            elif self.held or getattr(self, "double_clicked", False):
+            elif self.held or self.double_clicked:
                 if self.preserve_gesture_art: self.gesture_motion.trigger('rest')
                 if self.held and self.config['kind']=='code' and self.bubble.mode=='interaction':
                     self.bubble.remaining_ms=2500
@@ -263,6 +307,7 @@ class DesktopCharacter(QWidget):
             self.gesture_motion, self.gesture_pose = PhotoGestureMotion(), PortraitPose()
             self.motion.age = 0
             self.skin.restart_pose()
+        self.timer.setInterval(self.animation_interval(False))
         self.say_reaction('pet')
 
     def react_motion(self, action):
@@ -302,15 +347,13 @@ class DesktopCharacter(QWidget):
         self.say_reaction('drag_hold' if self.dragged else 'hold', auto_hide_ms=0)
 
     def pet_character(self):
-        if not self.pressed or self.dragged:
-            self.hold_timer.stop()
+        if not self.pressed or self.dragged or self.held:
             return
-        first = not self.held
         self.held = True
         self.click_timer.stop()
         self.actions.pulse("happy", 1.5)
         self.feedback.add(71, 48, 'heart')
-        if first: self.say_touch_reaction()
+        self.say_touch_reaction()
 
     def display_state(self):
         if self.pressed and self.dragged: return 'dragging'
@@ -324,7 +367,7 @@ class DesktopCharacter(QWidget):
         self.pose_demo = (state, time.monotonic()+5)
         self.motion.age = 0
         self.skin.restart_pose()
-        self.show()
+        self.show_character()
         self.update()
 
     def wheelEvent(self, event):
@@ -347,7 +390,10 @@ class DesktopCharacter(QWidget):
         self.hovering, self.target_look = False, (0, 0)
 
     def clamp_position(self):
-        area = self.screen().availableGeometry()
+        screen = QApplication.screenAt(self.geometry().center()) or self.screen() or QApplication.primaryScreen()
+        if screen is None:
+            return
+        area = screen.availableGeometry()
         self.move(max(area.left(), min(self.x(), area.right()-self.width()+1)), max(area.top(), min(self.y(), area.bottom()-self.height()+1)))
 
     def save_position(self):
@@ -386,7 +432,7 @@ class DesktopCharacter(QWidget):
             self.motion, self.pose = PortraitMotion(), PortraitPose()
             self.gesture_motion, self.gesture_pose = PhotoGestureMotion(), PortraitPose()
             self.preserve_gesture_art = False
-        self.timer.setInterval(16 if self.skin.continuous_motion and not preferences["reduced_motion"] else 40)
+        self.timer.setInterval(self.animation_interval(False))
         self.clamp_position()
         if replace: self.actions.pulse("greeting", 2)
         self.update()
@@ -453,10 +499,23 @@ class DesktopCharacter(QWidget):
                 from .review_theme import reveal
                 reveal(self.bubble, self.preferences["reduced_motion"])
 
+    def open_brief(self):
+        self.panel.open_tab("brief")
+        self.open_panel()
+
+    def show_character(self):
+        if self.restore_tab:
+            self.restore_tab.hide()
+        self.clamp_position()
+        if self.isMinimized():
+            self.showNormal()
+        else:
+            self.show()
+        self.raise_()
+
     def open_panel(self):
         self.pose_demo = None
-        if self.restore_tab: self.restore_tab.hide()
-        self.show()
+        self.show_character()
         self.actions.touch()
         self.bubble.hide()
         self.place_popup(self.panel)
@@ -468,16 +527,18 @@ class DesktopCharacter(QWidget):
             reveal(self.panel, self.preferences["reduced_motion"])
 
     def hide_character(self):
+        self.snap_animation.stop()
         self.hide()
+        self.show_restore_tab()
+
+    def show_restore_tab(self):
         if self.restore_tab:
             self.restore_tab.place()
-            self.restore_tab.show()
+            self.restore_tab.showNormal()
             self.restore_tab.raise_()
 
     def restore(self):
-        if self.restore_tab: self.restore_tab.hide()
-        self.show()
-        self.raise_()
+        self.show_character()
         self.actions.pulse("greeting", 2)
         modal = QApplication.activeModalWidget()
         if modal:
@@ -492,12 +553,9 @@ class DesktopCharacter(QWidget):
         else: self.click_cycle()
 
     def contextMenuEvent(self, event):
-        self.click_timer.stop()
-        self.hold_timer.stop()
-        self.long_hold_timer.stop()
-        self.fast_drag_timer.stop()
+        self.cancel_pointer_gesture()
         menu = QMenu(self)
-        menu.addAction("비서 열기", self.open_panel)
+        menu.addAction("브리핑 열기", self.open_brief)
         if self.skin.pose_motion:
             poses = menu.addMenu("동작 미리보기")
             for key, title in [("idle", "대기"), ("happy", "폴짝 뛰기"), ("searching", "찾기"),
@@ -512,20 +570,57 @@ class DesktopCharacter(QWidget):
                 menu.addAction('한마디 듣기',lambda:self.panel.idle_chat.speak(manual=True))
                 menu.addAction('1시간 조용히',self.panel.idle_chat.quiet_hour)
                 menu.addAction('오늘은 조용히',self.panel.idle_chat.quiet_today)
-        menu.addAction("비서 숨기기 · 열기 탭 유지", self.hide_character)
+        menu.addSeparator()
+        menu.addAction("캐릭터 접기", self.hide_character)
         menu.addSeparator()
         menu.addAction("종료", QApplication.instance().quit)
         menu.exec(event.globalPos())
 
-    def hideEvent(self, event):
-        self.pressed = False
-        self.preserve_gesture_art = False
-        self.gesture_motion, self.gesture_pose = PhotoGestureMotion(), PortraitPose()
+    def cancel_pointer_gesture(self):
+        dragging = self.pressed and self.dragged
+        self.pressed = self.dragged = self.held = self.double_clicked = False
+        self.click_timer.stop()
         self.hold_timer.stop()
         self.long_hold_timer.stop()
         self.fast_drag_timer.stop()
+        self.drag_lean = 0
+        if dragging:
+            self.clamp_position()
+            self.save_position()
+        if self.preserve_gesture_art:
+            self.gesture_motion.trigger('land' if dragging else 'rest')
+        if self.bubble.isVisible() and self.bubble.mode == 'interaction' and not self.bubble.remaining_ms:
+            self.bubble.remaining_ms = 2500
+            self.bubble.arm_expiry()
+
+    def event(self, event):
+        if event.type() == QEvent.Type.UngrabMouse and self.pressed:
+            self.cancel_pointer_gesture()
+        return super().event(event)
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.WindowStateChange and self.restore_tab:
+            if self.isMinimized():
+                self.show_restore_tab()
+            elif not self.isHidden():
+                self.restore_tab.hide()
+
+    def showEvent(self, event):
+        self.last_tick = time.monotonic()
+        self.timer.start(self.animation_interval(False))
+        self.skin.pause_movie(False)
+        super().showEvent(event)
+
+    def hideEvent(self, event):
+        self.timer.stop()
+        self.skin.pause_movie(True)
+        self.cancel_pointer_gesture()
+        self.preserve_gesture_art = False
+        self.gesture_motion, self.gesture_pose = PhotoGestureMotion(), PortraitPose()
         self.bubble.hide()
         self.panel.hide()
+        super().hideEvent(event)
 
 
 class RestoreTab(QWidget):
@@ -537,10 +632,11 @@ class RestoreTab(QWidget):
         self.setWindowFlags(Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setStyleSheet(STYLE)
-        self.setFixedSize(112, 42)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(2, 2, 2, 2)
-        layout.addWidget(button("비서 열기", sprite.restore, True))
+        layout.addWidget(button("캐릭터 다시 표시", sprite.restore, True))
+        self.setFixedSize(self.sizeHint())
 
     def place(self):
         area = self.sprite.screen().availableGeometry()

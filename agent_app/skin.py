@@ -21,11 +21,14 @@ class AnimationSet:
         if path.exists():
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
-                self.animations = data.get("animations", {})
+                animations = data.get("animations", {})
+                if not isinstance(animations, dict):
+                    raise ValueError("Invalid character animations")
+                self.animations = animations
                 self.layout = "portrait" if data.get("layout") == "portrait" else "default"
                 self.pose_motion = self.layout == "portrait" and data.get("motion") == "poses"
                 self.continuous_motion = self.layout == "portrait" and data.get("motion") in {"portrait", "poses"}
-            except (OSError, ValueError):
+            except (OSError, ValueError, AttributeError):
                 self.animations = {}
 
     def safe_path(self, value):
@@ -109,12 +112,13 @@ class AnimationSet:
                     sheets[file] = QPixmap(str(self.safe_path(file)))
                 image = sheets[file]
                 sources[key] = image.copy(*rect) if rect else image
-            self.poses[state] = sources[key]
-            self.pose_scales[state] = spec.get("display_scale", 1)
+            if not sources[key].isNull():
+                self.poses[state] = sources[key]
+                self.pose_scales[state] = spec.get("display_scale", 1)
 
     def layers(self, state, ticks):
         """Blend only on pose changes; pose holds never cycle different clothes."""
-        if not self.pose_motion: return None
+        if not self.pose_motion or "idle" not in self.poses: return None
         state = state if state in self.poses else "idle"
         if state != self._pose_action:
             self._pose_action, self._pose_action_start = state, ticks
@@ -140,6 +144,11 @@ class AnimationSet:
         self._pose_action = self._pose_target = 'idle'
         self._pose_previous = None
 
+    def pause_movie(self, paused):
+        current = self.cache.get(self.active)
+        if self.motion and isinstance(current, QMovie) and current.state() != QMovie.MovieState.NotRunning:
+            current.setPaused(paused)
+
     def close(self):
         for clip in self.cache.values():
             if isinstance(clip, QMovie):
@@ -161,8 +170,19 @@ def selected_skin(root, repaint, preferences):
         skin.pose_motion = skin.continuous_motion = True
     elif key != "legacy" and not path:
         skin.animations = {}
-    if skin.pose_motion:
-        skin.prepare_poses()
-    elif skin.continuous_motion:
-        skin.frame("idle", 0)  # Decode once, before the first mouse interaction.
+    try:
+        if skin.pose_motion:
+            skin.prepare_poses()
+            if "idle" not in skin.poses:
+                raise ValueError("Missing idle pose")
+        elif skin.continuous_motion:
+            skin.frame("idle", 0)  # Decode once, before the first mouse interaction.
+        elif path and not skin.animations:
+            raise ValueError("Missing animations")
+    except (OSError, ValueError, TypeError, KeyError, IndexError):
+        skin.close()
+        if key != "ember_fox":
+            return selected_skin(root, repaint, {**preferences, "character": "ember_fox"})
+        skin.animations = {}
+        skin.pose_motion = skin.continuous_motion = False
     return skin

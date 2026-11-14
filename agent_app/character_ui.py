@@ -14,7 +14,8 @@ class CharacterPreview(QWidget):
     def __init__(self, root, config, preferences):
         super().__init__()
         self.root, self.config, self.preferences = root, dict(config), preferences
-        self.frame, self.state = 0, "idle"
+        self.frame = self.action_frame = 0
+        self.state = "idle"
         self.motion, self.pose, self.last_tick = PortraitMotion(), PortraitPose(), time.monotonic()
         self.gesture_motion = PhotoGestureMotion()
         self.setFixedHeight(214)
@@ -50,7 +51,7 @@ class CharacterPreview(QWidget):
         self.update()
 
     def action(self, state):
-        self.frame, self.state = 0, state
+        self.action_frame, self.state = self.frame, state
         self.motion.age = 0
         self.gesture_motion = PhotoGestureMotion()
         self.skin.restart_pose()
@@ -67,7 +68,7 @@ class CharacterPreview(QWidget):
         p.scale(scale, scale)
         p.translate((width-142)/2,0)
         draw_character(p, self.config, self.frame, self.state, style=self.preferences["character"],
-                       custom=self.skin.frame(self.state, self.frame), motion=not self.preferences["reduced_motion"], height=height,
+                       custom=self.skin.frame(self.state, self.frame-self.action_frame), motion=not self.preferences["reduced_motion"], height=height,
                        pose=self.pose if self.skin.continuous_motion else None,
                        layers=self.skin.layers(self.state,self.frame),stage_width=width)
         p.end()
@@ -165,6 +166,6 @@ class CharacterDialog(RoundedDialog):
             self.error.setText(str(exc))
 
     def done(self, result):
+        super().done(result)
         self.preview.timer.stop()
         self.preview.skin.close()
-        super().done(result)

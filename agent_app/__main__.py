@@ -13,9 +13,11 @@ def main():
     root = app_root()
     root.mkdir(parents=True, exist_ok=True)
     if getattr(sys, 'frozen', False):
+        import faulthandler
         logs = root/'.data/logs'
         logs.mkdir(parents=True, exist_ok=True)
         sys.stdout = sys.stderr = (logs/'desktop.log').open('a', encoding='utf-8', buffering=1)
+        faulthandler.enable(file=sys.stderr)
     try:
         from .review_ui import run
         result = run(root)
